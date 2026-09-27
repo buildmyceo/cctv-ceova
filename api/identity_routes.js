@@ -168,6 +168,218 @@ function createIdentityRouter(options = {}) {
     }
   });
 
+  // -------------------------------------------------------------
+  // 2b. People Over Time (Timeline & Historical Occupancy Analytics)
+  // -------------------------------------------------------------
+  const timelineHistory = [];
+  const MAX_TIMELINE_POINTS = 7200; // up to 7200 points (2 hours at 1s resolution)
+
+  // Background server auto-sampler (records every 2 seconds)
+  setInterval(() => {
+    try {
+      const activePersons = globalManager.getActivePersons();
+      let staff = 0;
+      let visitors = 0;
+      let unknown = 0;
+      for (const p of activePersons) {
+        if (p.assignedRole === 'STAFF') staff++;
+        else if (p.assignedRole === 'CUSTOMER' || p.assignedRole === 'VISITOR') visitors++;
+        else unknown++;
+      }
+      const now = Date.now();
+      timelineHistory.push({
+        timestamp: now,
+        totalCount: activePersons.length,
+        staffCount: staff,
+        visitorCount: visitors,
+        unknownCount: unknown
+      });
+      if (timelineHistory.length > MAX_TIMELINE_POINTS) {
+        timelineHistory.shift();
+      }
+    } catch (_) {}
+  }, 2000);
+
+  /**
+   * GET /api/people/timeline
+   * Retrieve time series of people count with calculations (peak, average, current)
+   */
+  router.get('/people/timeline', (req, res) => {
+    try {
+      const rangeSeconds = req.query.range ? parseInt(req.query.range, 10) : null;
+      const now = Date.now();
+      let points = timelineHistory;
+
+      if (rangeSeconds && !isNaN(rangeSeconds)) {
+        const cutoff = now - (rangeSeconds * 1000);
+        points = timelineHistory.filter(p => p.timestamp >= cutoff);
+      }
+
+      // Calculate statistics
+      let peak = 0;
+      let peakTime = null;
+      let sum = 0;
+      const count = points.length;
+
+      for (const pt of points) {
+        if (pt.totalCount > peak) {
+          peak = pt.totalCount;
+          peakTime = pt.timestamp;
+        }
+        sum += pt.totalCount;
+      }
+
+      const avg = count > 0 ? (sum / count).toFixed(1) : '0.0';
+      const current = points.length > 0 ? points[points.length - 1].totalCount : 0;
+
+      res.json({
+        success: true,
+        points,
+        stats: {
+          current,
+          peak,
+          peakTime,
+          average: parseFloat(avg),
+          totalDataPoints: count
+        }
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/people/timeline/sample
+   * Receive a high-resolution sample from the viewer / detection pipeline
+   */
+  router.post('/people/timeline/sample', (req, res) => {
+    try {
+      const { timestamp, totalCount, staffCount, visitorCount, unknownCount } = req.body;
+      const sample = {
+        timestamp: timestamp || Date.now(),
+        totalCount: typeof totalCount === 'number' ? totalCount : 0,
+        staffCount: typeof staffCount === 'number' ? staffCount : 0,
+        visitorCount: typeof visitorCount === 'number' ? visitorCount : 0,
+        unknownCount: typeof unknownCount === 'number' ? unknownCount : 0
+      };
+
+      timelineHistory.push(sample);
+      if (timelineHistory.length > MAX_TIMELINE_POINTS) {
+        timelineHistory.shift();
+      }
+
+      res.json({ success: true, count: timelineHistory.length });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * DELETE /api/people/timeline
+   * Clear timeline history
+   */
+  router.delete('/people/timeline', (req, res) => {
+    timelineHistory.length = 0;
+    res.json({ success: true, message: 'Timeline cleared' });
+  });
+
+  // -------------------------------------------------------------
+  // 2c. Popular Times (Day of Week & Hourly Occupancy Analytics)
+  // -------------------------------------------------------------
+
+  const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+
+  /**
+   * GET /api/people/popular-times
+   * Retrieve day and hourly people occupancy histogram
+   */
+  router.get('/people/popular-times', (req, res) => {
+    try {
+      let dayOfWeek = req.query.day_of_week !== undefined && req.query.day_of_week !== null
+        ? parseInt(req.query.day_of_week, 10)
+        : null;
+
+      if (dayOfWeek === null && req.query.day) {
+        const found = DAY_NAMES.findIndex(d => d.toLowerCase().startsWith(req.query.day.toLowerCase()));
+        if (found !== -1) dayOfWeek = found;
+      }
+
+      if (dayOfWeek === null) {
+        dayOfWeek = new Date().getDay();
+      }
+
+      const rows = db.getHourlyOccupancy(dayOfWeek);
+      const allDays = {};
+
+      DAY_NAMES.forEach((name, idx) => {
+        allDays[idx] = {
+          dayOfWeek: idx,
+          dayName: name,
+          hours: []
+        };
+      });
+
+      const allRows = db.getHourlyOccupancy(null);
+      for (const r of allRows) {
+        if (allDays[r.day_of_week]) {
+          const h = r.hour_of_day;
+          const period = h >= 12 ? 'PM' : 'AM';
+          const displayH = h % 12 === 0 ? 12 : h % 12;
+          allDays[r.day_of_week].hours.push({
+            hour: h,
+            label: `${displayH} ${period}`,
+            shortLabel: `${displayH}${period.toLowerCase()[0]}`,
+            avgPeople: r.avg_people,
+            peakPeople: r.peak_people,
+            sampleCount: r.sample_count,
+            lastUpdated: r.last_updated_at
+          });
+        }
+      }
+
+      res.json({
+        success: true,
+        selectedDay: dayOfWeek,
+        selectedDayName: DAY_NAMES[dayOfWeek],
+        hours: allDays[dayOfWeek] ? allDays[dayOfWeek].hours : [],
+        allDays
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/people/popular-times/record
+   * Record live occupancy sample into local persistent SQLite database
+   */
+  router.post('/people/popular-times/record', (req, res) => {
+    try {
+      const now = new Date();
+      const dayOfWeek = req.body.day_of_week !== undefined ? parseInt(req.body.day_of_week, 10) : now.getDay();
+      const hourOfDay = req.body.hour_of_day !== undefined ? parseInt(req.body.hour_of_day, 10) : now.getHours();
+      const count = typeof req.body.count === 'number' ? req.body.count : 0;
+
+      db.recordHourlyOccupancy(dayOfWeek, hourOfDay, count);
+      res.json({ success: true, dayOfWeek, hourOfDay, count });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/people/popular-times/reset
+   * Reset / clear popular times data to clean 0
+   */
+  router.post('/people/popular-times/reset', (req, res) => {
+    try {
+      db.clearHourlyOccupancy();
+      res.json({ success: true, message: 'All occupancy data reset to 0' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   /**
    * GET /api/people/:globalTrackId
    * Retrieve timeline and cross-camera sightings of a specific person

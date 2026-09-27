@@ -3,18 +3,62 @@
  * security/auth.js
  * 
  * Server-Side Authentication & Role-Based Access Control (RBAC) Middleware.
- * Enforces authentication and authorization for staff management and identity APIs.
+ * Enforces session authentication, Ceova Main SSO handshakes, organization isolation,
+ * and plan entitlement verification for CCTV operations.
  */
+
+const { getDatabase } = require('../db/database');
+const { CEOVA_INTERNAL_SECRET } = require('./ceova_protocol');
 
 // Default internal system tokens (configurable via environment variables)
 const ADMIN_API_KEY = process.env.CEOVA_ADMIN_KEY || 'ceova-admin-secret-key-2026';
 const OPERATOR_API_KEY = process.env.CEOVA_OPERATOR_KEY || 'ceova-operator-key-2026';
 
+function parseCookies(req) {
+  const list = {};
+  const cookieHeader = req.headers['cookie'];
+  if (!cookieHeader) return list;
+
+  cookieHeader.split(';').forEach(cookie => {
+    const parts = cookie.split('=');
+    const name = parts[0]?.trim();
+    if (!name) return;
+    const value = parts.slice(1).join('=').trim();
+    list[name] = decodeURIComponent(value);
+  });
+  return list;
+}
+
 function authenticate(req, res, next) {
-  // Allow browser localhost / local subnet access by default for CCTV Hub UI convenience,
-  // or require explicit key when header provided.
+  const db = getDatabase();
+  const cookies = parseCookies(req);
+  
+  // 1. Check for Active CCTV Session (Cookie or Header)
+  const sessionToken = cookies['ceova_cctv_session'] || 
+                       req.headers['x-cctv-session'] || 
+                       req.query.session_token;
+
+  if (sessionToken) {
+    const session = db.getSession(sessionToken);
+    if (session) {
+      req.session = session;
+      req.organization_id = session.organization_id;
+      req.plan = session.account?.plan || 'starter';
+      req.entitlements = session.account?.entitlements || {};
+      req.user = {
+        id: session.ceova_user_id,
+        role: session.role || 'OPERATOR',
+        username: session.ceova_user_id,
+        organization_id: session.organization_id,
+        account: session.account
+      };
+      return next();
+    }
+  }
+
+  // 2. Check for Ceova Internal Protocol / Shared Secret
   const authHeader = req.headers['authorization'];
-  const apiKeyHeader = req.headers['x-api-key'];
+  const apiKeyHeader = req.headers['x-api-key'] || req.headers['x-ceova-internal-key'];
   const queryKey = req.query.api_key;
 
   let token = null;
@@ -26,28 +70,57 @@ function authenticate(req, res, next) {
     token = queryKey.trim();
   }
 
-  // If request is from the same server / local CCTV UI session
-  const isLocalOrigin = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
+  if (token === CEOVA_INTERNAL_SECRET) {
+    const activeAccount = db.getActiveAccount();
+    req.isCeovaInternal = true;
+    req.organization_id = activeAccount?.organization_id || 'ORG-DEFAULT';
+    req.plan = activeAccount?.plan || 'enterprise';
+    req.entitlements = activeAccount?.entitlements || { max_cameras: 50, analytics: true, reports: true };
+    req.user = {
+      role: 'ADMIN',
+      username: 'ceova-main-internal',
+      organization_id: req.organization_id
+    };
+    return next();
+  }
 
   if (token === ADMIN_API_KEY) {
-    req.user = { role: 'ADMIN', username: 'admin' };
+    const activeAccount = db.getActiveAccount();
+    req.organization_id = activeAccount?.organization_id || 'ORG-DEFAULT';
+    req.plan = activeAccount?.plan || 'enterprise';
+    req.entitlements = activeAccount?.entitlements || { max_cameras: 50, analytics: true, reports: true };
+    req.user = { role: 'ADMIN', username: 'admin', organization_id: req.organization_id };
     return next();
   }
 
   if (token === OPERATOR_API_KEY) {
-    req.user = { role: 'OPERATOR', username: 'operator' };
+    const activeAccount = db.getActiveAccount();
+    req.organization_id = activeAccount?.organization_id || 'ORG-DEFAULT';
+    req.plan = activeAccount?.plan || 'professional';
+    req.entitlements = activeAccount?.entitlements || { max_cameras: 16, analytics: true, reports: true };
+    req.user = { role: 'OPERATOR', username: 'operator', organization_id: req.organization_id };
     return next();
   }
 
-  // Default local session to OPERATOR/ADMIN for CCTV UI
+  // 3. Local Console / UI Fallback (if running locally without token)
+  const isLocalOrigin = req.ip === '127.0.0.1' || req.ip === '::1' || req.ip === '::ffff:127.0.0.1';
   if (isLocalOrigin || !token) {
-    req.user = { role: 'ADMIN', username: 'local-console' };
+    const activeAccount = db.getActiveAccount();
+    req.organization_id = activeAccount?.organization_id || 'ORG-DEFAULT';
+    req.plan = activeAccount?.plan || 'starter';
+    req.entitlements = activeAccount?.entitlements || { max_cameras: 5, analytics: true, reports: true };
+    req.user = {
+      role: 'ADMIN',
+      username: 'local-console',
+      organization_id: req.organization_id,
+      account: activeAccount
+    };
     return next();
   }
 
   return res.status(401).json({
     error: 'Unauthorized',
-    message: 'Invalid or missing API authentication token'
+    message: 'Invalid or missing API authentication token or session'
   });
 }
 
@@ -71,6 +144,7 @@ function requireRole(minRole = 'OPERATOR') {
 module.exports = {
   authenticate,
   requireRole,
+  parseCookies,
   ADMIN_API_KEY,
   OPERATOR_API_KEY
 };

@@ -299,51 +299,88 @@ def match_body(req: MatchRequest):
     if q_norm > 0:
         query_emb /= q_norm
 
-    best_match = None
-    best_score = 0.0
+    scored_cands = []
 
-    for cand in req.gallery:
-        cand_emb_list = cand.get("embedding") or cand.get("feature_vector")
-        if not cand_emb_list or len(cand_emb_list) != len(query_emb):
-            continue
-
-        cand_emb = np.array(cand_emb_list, dtype=np.float32)
-        c_norm = np.linalg.norm(cand_emb)
+    def compute_single_similarity(q_vec: np.ndarray, c_vec: np.ndarray) -> float:
+        c_norm = np.linalg.norm(c_vec)
         if c_norm > 0:
-            cand_emb /= c_norm
+            c_vec = c_vec / c_norm
 
         # 1. Holistic Cosine Similarity
-        cosine_sim = float(np.dot(query_emb, cand_emb))
+        cosine_sim = float(np.dot(q_vec, c_vec))
 
         # 2. Torso Sub-similarity (indices 36-72)
-        torso_q = query_emb[36:72]
-        torso_c = cand_emb[36:72]
-        torso_sim = float(np.dot(torso_q, torso_c) / (np.linalg.norm(torso_q) * np.linalg.norm(torso_c) + 1e-6))
+        torso_q = q_vec[36:72]
+        torso_c = c_vec[36:72]
+        t_norm_q = np.linalg.norm(torso_q)
+        t_norm_c = np.linalg.norm(torso_c)
+        torso_sim = float(np.dot(torso_q, torso_c) / (t_norm_q * t_norm_c + 1e-6)) if (t_norm_q > 0 and t_norm_c > 0) else 0.0
 
         # 3. Lower Body Sub-similarity (indices 72-108)
-        lower_q = query_emb[72:108]
-        lower_c = cand_emb[72:108]
-        lower_sim = float(np.dot(lower_q, lower_c) / (np.linalg.norm(lower_q) * np.linalg.norm(lower_c) + 1e-6))
+        lower_q = q_vec[72:108]
+        lower_c = c_vec[72:108]
+        l_norm_q = np.linalg.norm(lower_q)
+        l_norm_c = np.linalg.norm(lower_c)
+        lower_sim = float(np.dot(lower_q, lower_c) / (l_norm_q * l_norm_c + 1e-6)) if (l_norm_q > 0 and l_norm_c > 0) else 0.0
 
         # Weighted multi-zone similarity
         sim = float(0.45 * cosine_sim + 0.35 * torso_sim + 0.20 * lower_sim)
-        sim = max(0.0, min(1.0, sim))
+        return max(0.0, min(1.0, sim))
 
-        if sim > best_score:
-            best_score = sim
-            best_match = {
-                "id": cand.get("id"),
-                "name": cand.get("name"),
-                "role": cand.get("role"),
-                "similarity": round(sim, 4),
-            }
+    for cand in req.gallery:
+        # Check if candidate has multi-prototypes (REMIND dual-bank memory)
+        prototypes = cand.get("prototypes") or []
+        if not prototypes:
+            cand_emb_list = cand.get("embedding") or cand.get("feature_vector")
+            if cand_emb_list and len(cand_emb_list) == len(query_emb):
+                prototypes = [cand_emb_list]
+
+        if not prototypes:
+            continue
+
+        cand_max_sim = 0.0
+        for proto in prototypes:
+            proto_list = proto.get("embedding") if isinstance(proto, dict) else proto
+            if not proto_list or len(proto_list) != len(query_emb):
+                continue
+            p_vec = np.array(proto_list, dtype=np.float32)
+            p_sim = compute_single_similarity(query_emb, p_vec)
+            if p_sim > cand_max_sim:
+                cand_max_sim = p_sim
+
+        scored_cands.append({
+            "id": cand.get("id"),
+            "name": cand.get("name"),
+            "role": cand.get("role"),
+            "similarity": round(cand_max_sim, 4),
+            "prototype_count": len(prototypes),
+        })
+
+    scored_cands.sort(key=lambda x: x["similarity"], reverse=True)
+
+    best_match = scored_cands[0] if scored_cands else None
+    best_score = best_match["similarity"] if best_match else 0.0
+
+    margin = 1.0
+    is_ambiguous = False
+    is_provisional = False
+
+    if len(scored_cands) > 1:
+        margin = round(scored_cands[0]["similarity"] - scored_cands[1]["similarity"], 4)
+        if margin < 0.04 and scored_cands[1]["similarity"] >= (req.threshold - 0.08):
+            is_ambiguous = True
+            is_provisional = True
 
     matched = (best_score >= req.threshold) and (best_match is not None)
     return {
         "matched": matched,
         "best_score": round(best_score, 4),
         "threshold": req.threshold,
+        "is_ambiguous": is_ambiguous,
+        "is_provisional": is_provisional,
+        "ambiguity_margin": margin,
         "best_match": best_match if matched else None,
+        "top_candidates": scored_cands[:3],
     }
 
 

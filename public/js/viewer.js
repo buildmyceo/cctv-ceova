@@ -127,6 +127,7 @@
 
   // 2. Fetch Network Info & Generate Pairing QR Code
   async function setupNetworkAndQR() {
+    if (!networkIpSelect) return;
     try {
       const res = await fetch('/api/info');
       const info = await res.json();
@@ -159,24 +160,27 @@
       updatePairingUrl();
     } catch (e) {
       console.warn('Could not fetch /api/info, using current host', e);
-      const opt = document.createElement('option');
-      opt.value = window.location.origin;
-      opt.textContent = window.location.host;
-      networkIpSelect.appendChild(opt);
-      updatePairingUrl();
+      if (networkIpSelect) {
+        const opt = document.createElement('option');
+        opt.value = window.location.origin;
+        opt.textContent = window.location.host;
+        networkIpSelect.appendChild(opt);
+        updatePairingUrl();
+      }
     }
   }
 
   async function updatePairingUrl() {
+    if (!networkIpSelect || !pairingQrImg) return;
     const hostBase = networkIpSelect.value || window.location.origin;
     const cameraUrl = `${hostBase}/camera.html?room=${encodeURIComponent(activeRoomId)}`;
-    cameraUrlInput.value = cameraUrl;
-    btnOpenTab.href = cameraUrl;
+    if (cameraUrlInput) cameraUrlInput.value = cameraUrl;
+    if (btnOpenTab) btnOpenTab.href = cameraUrl;
 
     try {
       const qrRes = await fetch(`/api/qr?text=${encodeURIComponent(cameraUrl)}`);
       const qrData = await qrRes.json();
-      if (qrData.dataUrl) {
+      if (qrData.dataUrl && pairingQrImg) {
         pairingQrImg.src = qrData.dataUrl;
       }
     } catch (err) {
@@ -184,19 +188,232 @@
     }
   }
 
-  networkIpSelect.addEventListener('change', updatePairingUrl);
+  if (networkIpSelect) {
+    networkIpSelect.addEventListener('change', updatePairingUrl);
+  }
 
-  btnCopyLink.addEventListener('click', () => {
-    navigator.clipboard.writeText(cameraUrlInput.value).then(() => {
-      btnCopyLink.textContent = 'Copied!';
-      setTimeout(() => {
-        btnCopyLink.innerHTML = `
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-          </svg> Copy`;
-      }, 2000);
+  if (btnCopyLink && cameraUrlInput) {
+    btnCopyLink.addEventListener('click', () => {
+      navigator.clipboard.writeText(cameraUrlInput.value).then(() => {
+        btnCopyLink.textContent = 'Copied!';
+        setTimeout(() => {
+          btnCopyLink.innerHTML = `
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+            </svg> Copy`;
+        }, 2000);
+      });
     });
-  });
+  }
+
+  // -------------------------------------------------------------
+  // CCTV Camera Login & Autonomous Discovery Handler
+  // -------------------------------------------------------------
+  const overlayCctvForm = document.getElementById('overlayCctvForm');
+  const overlayCctvUsername = document.getElementById('overlayCctvUsername');
+  const overlayCctvPassword = document.getElementById('overlayCctvPassword');
+  const overlayBotStatusText = document.getElementById('overlayBotStatusText');
+  const overlayBotPulse = document.getElementById('overlayBotPulse');
+  const btnOverlayConnect = document.getElementById('btnOverlayConnect');
+  const btnSimulateOverlay = document.getElementById('btnSimulateOverlay');
+
+  if (overlayCctvForm) {
+    overlayCctvForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = overlayCctvUsername?.value.trim() || 'admin';
+      const password = overlayCctvPassword?.value || '';
+      const targetIp = document.getElementById('overlayCctvIp')?.value.trim() || null;
+
+      if (btnOverlayConnect) {
+        btnOverlayConnect.disabled = true;
+        btnOverlayConnect.innerHTML = '<span class="pulse-dot"></span> Bot Scanning Network...';
+      }
+      if (overlayBotPulse) overlayBotPulse.style.background = '#38bdf8';
+      if (overlayBotStatusText) overlayBotStatusText.textContent = 'Bot Status: Sweeping local network & testing codes...';
+
+      try {
+        const res = await fetch('/api/cameras/discover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, targetIp })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to start bot discovery');
+
+        // Listen to SSE progress
+        const evtSource = new EventSource('/api/cameras/discover/events');
+        evtSource.onmessage = async (evtMsg) => {
+          try {
+            const ev = JSON.parse(evtMsg.data);
+            if (ev.message && overlayBotStatusText) {
+              overlayBotStatusText.textContent = ev.message;
+            }
+            if (ev.type === 'CAMERA_MATCHED' && ev.camera) {
+              evtSource.close();
+              if (overlayBotPulse) overlayBotPulse.style.background = '#22c55e';
+              if (overlayBotStatusText) overlayBotStatusText.textContent = `✓ Connected: ${ev.camera.brand} (${ev.camera.ip})`;
+              
+              // Auto-register camera into active surveillance and launch RTSP stream
+              try {
+                const regRes = await fetch('/api/cameras/connect-matched', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    id: ev.camera.id,
+                    name: `${ev.camera.brand} (${ev.camera.ip})`,
+                    rtspUrl: ev.camera.rtspUrl,
+                    zoneName: 'SALES_FLOOR'
+                  })
+                });
+                const regData = await regRes.json();
+                const streamUrl = (regData && regData.streamUrl) || `/api/cameras/${ev.camera.id}/stream.mjpg`;
+
+                displayRtspStream(ev.camera.id, `${ev.camera.brand} (${ev.camera.ip})`, streamUrl);
+              } catch (regErr) {
+                console.error('Error registering matched camera:', regErr);
+                displayRtspStream(ev.camera.id, `${ev.camera.brand} (${ev.camera.ip})`);
+              }
+            } else if (ev.type === 'SCAN_COMPLETED') {
+              evtSource.close();
+              if (btnOverlayConnect) {
+                btnOverlayConnect.disabled = false;
+                btnOverlayConnect.innerHTML = '⚡ Auto-Detect & Connect Camera';
+              }
+              if (ev.matchedCount === 0 && overlayBotStatusText) {
+                if (ev.discoveredHosts && ev.discoveredHosts.length > 0) {
+                  const firstH = ev.discoveredHosts[0];
+                  overlayBotStatusText.innerHTML = `Found ${ev.discoveredHosts.length} camera(s) on LAN (<a href="/connect.html" style="color:#38bdf8;text-decoration:underline;">Click to connect ${firstH.ip}</a>)`;
+                  if (overlayBotPulse) overlayBotPulse.style.background = '#eab308';
+                } else {
+                  overlayBotStatusText.textContent = 'Scan finished: No cameras found with these credentials.';
+                  if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+                }
+              }
+            }
+          } catch (_err) {}
+        };
+      } catch (err) {
+        if (overlayBotStatusText) overlayBotStatusText.textContent = `Error: ${err.message}`;
+        if (btnOverlayConnect) {
+          btnOverlayConnect.disabled = false;
+          btnOverlayConnect.innerHTML = '⚡ Auto-Detect & Connect Camera';
+        }
+      }
+    });
+  }
+
+  // Live CCTV Synthetic Stream Generator (for demo / simulation mode)
+  let simStreamInterval = null;
+  function startSimulatedCctvStream() {
+    const simCanvas = document.createElement('canvas');
+    simCanvas.width = 1280;
+    simCanvas.height = 720;
+    const ctx = simCanvas.getContext('2d');
+    
+    let frame = 0;
+    const people = [
+      { x: 340, y: 380, vx: 1.6, vy: 0.15, color: '#38bdf8', label: 'STAFF #1' },
+      { x: 820, y: 410, vx: -1.3, vy: -0.1, color: '#f59e0b', label: 'CUSTOMER' },
+      { x: 580, y: 440, vx: 0.9, vy: 0.25, color: '#10b981', label: 'STAFF #2' }
+    ];
+
+    function drawCctvFrame() {
+      frame++;
+      // Background gradient
+      const grad = ctx.createLinearGradient(0, 0, 0, 720);
+      grad.addColorStop(0, '#0a0f1d');
+      grad.addColorStop(0.45, '#162032');
+      grad.addColorStop(1, '#060a12');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 1280, 720);
+
+      // Perspective floor lines
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= 1280; x += 80) {
+        ctx.beginPath();
+        ctx.moveTo(x, 260);
+        ctx.lineTo((x - 640) * 2.5 + 640, 720);
+        ctx.stroke();
+      }
+      for (let y = 260; y <= 720; y += 45) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(1280, y);
+        ctx.stroke();
+      }
+
+      // Moving human silhouettes
+      people.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 150 || p.x > 1120) p.vx *= -1;
+        if (p.y < 340 || p.y > 540) p.vy *= -1;
+
+        const bob = Math.sin(frame * 0.18) * 4;
+        ctx.fillStyle = 'rgba(226, 232, 240, 0.88)';
+        // Head
+        ctx.beginPath();
+        ctx.arc(p.x, p.y - 75 + bob, 18, 0, Math.PI * 2);
+        ctx.fill();
+        // Torso
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y - 20 + bob, 22, 42, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Legs
+        ctx.fillRect(p.x - 16, p.y + 22 + bob, 10, 48);
+        ctx.fillRect(p.x + 6, p.y + 22 + bob, 10, 48);
+
+        // Security tag
+        ctx.fillStyle = p.color;
+        ctx.font = 'bold 12px "JetBrains Mono", monospace';
+        ctx.fillText(`● ${p.label}`, p.x - 30, p.y - 105 + bob);
+      });
+
+      // CCTV Camera OSD Overlay
+      ctx.fillStyle = '#22c55e';
+      ctx.font = 'bold 16px "JetBrains Mono", monospace';
+      const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      ctx.fillText(`REC ● CAM-01 [SALES FLOOR]  ${nowStr}  25.0 FPS`, 30, 40);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.font = '12px "JetBrains Mono", monospace';
+      ctx.fillText(`H.264 / 1080p / 4096kbps / RTSP HIKVISION OVER ONVIF`, 30, 62);
+
+      // Light scanline effect
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.015)';
+      for (let y = 0; y < 720; y += 4) {
+        ctx.fillRect(0, y, 1280, 1);
+      }
+    }
+
+    if (simCanvas.captureStream) {
+      const stream = simCanvas.captureStream(25);
+      remoteVideo.srcObject = stream;
+      remoteVideo.style.display = 'block';
+      remoteVideo.play().catch(() => {});
+      if (simStreamInterval) clearInterval(simStreamInterval);
+      simStreamInterval = setInterval(drawCctvFrame, 40);
+    }
+  }
+
+  // Simulation test mode button
+  if (btnSimulateOverlay) {
+    btnSimulateOverlay.addEventListener('click', async () => {
+      if (overlayBotStatusText) overlayBotStatusText.textContent = 'Simulating verified CCTV stream (Demo Mode)...';
+      if (overlayBotPulse) overlayBotPulse.style.background = '#38bdf8';
+      startSimulatedCctvStream();
+      setTimeout(() => {
+        if (overlayBotPulse) overlayBotPulse.style.background = '#22c55e';
+        if (overlayBotStatusText) overlayBotStatusText.textContent = '✓ Connected: Hikvision 1080p (Simulated)';
+        setTimeout(() => {
+          standbyOverlay.classList.add('hidden');
+          if (systemStatusText) systemStatusText.textContent = 'LIVE: Hikvision 1080p (Simulated)';
+          if (systemPulse) systemPulse.classList.add('active');
+        }, 800);
+      }, 1000);
+    });
+  }
 
   // 3. WebSocket & WebRTC Signaling
   function initWebSocket() {
@@ -349,8 +566,11 @@
 
       case 'status':
       case 'peer-joined': {
-        if (msg.role === 'broadcaster' || msg.status === 'broadcaster-ready') {
-          console.log('Phone camera joined the room.');
+        if (msg.source === 'rtsp' && msg.streamUrl) {
+          console.log(`[RTSP] Received active camera stream: ${msg.cameraId}`);
+          displayRtspStream(msg.cameraId, 'CCTV Camera', msg.streamUrl);
+        } else if (msg.role === 'broadcaster' || msg.status === 'broadcaster-ready') {
+          console.log('Camera joined the room.');
           // Don't recreate peer connection here; wait for broadcaster's offer
         }
         break;
@@ -505,10 +725,63 @@
       systemStatusText.textContent = 'ONLINE // LIVE FEED ACTIVE';
       osdStatus.textContent = 'ONLINE';
       osdStatus.style.color = 'var(--accent-green)';
-      addLogEvent('camera-connect', 'Phone Camera Connected', 'Live video stream initialized');
+      addLogEvent('camera-connect', 'CCTV Camera Connected', 'Live video stream initialized');
     }
     streamProtocolText.textContent = protocolName;
     startFpsMeter();
+  }
+
+  // Display Live RTSP Video Stream
+  function displayRtspStream(cameraId, cameraName = 'CCTV Camera', customStreamUrl = null) {
+    const streamUrl = customStreamUrl || `/api/cameras/${cameraId}/stream.mjpg`;
+    if (!fallbackImgFeed) return;
+
+    if (systemStatusText) systemStatusText.textContent = `CONNECTING: ${cameraName}...`;
+    if (systemPulse) systemPulse.className = 'pulse-dot active';
+
+    let firstFrameArrived = false;
+
+    fallbackImgFeed.onload = () => {
+      if (!firstFrameArrived) {
+        firstFrameArrived = true;
+        standbyOverlay.classList.add('hidden');
+        if (systemStatusText) systemStatusText.textContent = `LIVE: ${cameraName}`;
+        if (systemPulse) systemPulse.className = 'pulse-dot online';
+        if (streamProtocolText) streamProtocolText.textContent = 'RTSP MJPEG';
+        onStreamConnected('RTSP MJPEG');
+      }
+    };
+
+    fallbackImgFeed.onerror = () => {
+      console.warn(`[Viewer] Failed to load stream from ${streamUrl}`);
+      if (!firstFrameArrived) {
+        standbyOverlay.classList.remove('hidden');
+        if (overlayBotStatusText) {
+          overlayBotStatusText.textContent = `Stream connection failed for ${cameraName}. Check camera credentials & network.`;
+        }
+        if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+        if (systemStatusText) systemStatusText.textContent = `OFFLINE // ${cameraName}`;
+        if (systemPulse) systemPulse.className = 'pulse-dot';
+      }
+    };
+
+    // Direct the fallback image to the live MJPEG stream
+    fallbackImgFeed.src = streamUrl;
+    fallbackImgFeed.style.display = 'block';
+    remoteVideo.style.display = 'none';
+  }
+
+  // Auto-connect to active camera in database on page load
+  async function checkActiveCameraOnLoad() {
+    try {
+      const res = await fetch('/api/cameras');
+      const data = await res.json();
+      if (data && data.cameras && data.cameras.length > 0) {
+        const cam = data.cameras[0];
+        console.log(`[Viewer] Found registered camera on startup: ${cam.name} (${cam.id})`);
+        displayRtspStream(cam.id, cam.name, `/api/cameras/${cam.id}/stream.mjpg`);
+      }
+    } catch (_e) {}
   }
 
   function onStreamDisconnected() {
@@ -546,6 +819,8 @@
 
       if (remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none') {
         resMeter.textContent = `${remoteVideo.videoWidth} x ${remoteVideo.videoHeight}`;
+      } else if (fallbackImgFeed && fallbackImgFeed.style.display !== 'none' && fallbackImgFeed.naturalWidth > 0) {
+        resMeter.textContent = `${fallbackImgFeed.naturalWidth} x ${fallbackImgFeed.naturalHeight}`;
       }
 
       if ('requestVideoFrameCallback' in remoteVideo && remoteVideo.style.display !== 'none') {
@@ -559,6 +834,8 @@
         if (remoteVideo.style.display !== 'none') {
           const fps = Math.round((vFrameCount * 1000) / (now - lastTime));
           fpsMeter.textContent = String(fps || 30);
+        } else if (fallbackImgFeed && fallbackImgFeed.style.display !== 'none') {
+          fpsMeter.textContent = '15';
         }
         vFrameCount = 0;
         lastTime = now;
@@ -2192,16 +2469,18 @@
   remoteVideo.addEventListener('loadedmetadata', handleVideoDimensionUpdate);
   remoteVideo.addEventListener('resize', handleVideoDimensionUpdate);
 
-  fallbackImgFeed.addEventListener('load', () => {
-    if (remoteVideo.style.display === 'none' || !remoteVideo.srcObject) {
-      if (currentAspectMode === 'auto') {
-        const streamRatio = fallbackImgFeed.naturalHeight > fallbackImgFeed.naturalWidth ? '9:16' : '16:9';
-        if (lastAutoDetectedAspect !== streamRatio) {
-          applyAspectMode('auto', false);
+  if (fallbackImgFeed) {
+    fallbackImgFeed.addEventListener('load', () => {
+      if (remoteVideo.style.display === 'none' || !remoteVideo.srcObject) {
+        if (currentAspectMode === 'auto') {
+          const streamRatio = fallbackImgFeed.naturalHeight > fallbackImgFeed.naturalWidth ? '9:16' : '16:9';
+          if (lastAutoDetectedAspect !== streamRatio) {
+            applyAspectMode('auto', false);
+          }
         }
       }
-    }
-  });
+    });
+  }
 
   window.addEventListener('resize', () => {
     syncCanvasDimensions();
@@ -2981,6 +3260,1307 @@
     memoryFilterRole.addEventListener('change', () => loadKnownGallery());
   }
 
+  // =========================================================
+  // PEOPLE COUNT RESPECT TO TIME (REAL-TIME TIMELINE GRAPH)
+  // =========================================================
+  const peopleCanvas = document.getElementById('peopleOccupancyCanvas');
+  const graphWrapper = document.getElementById('graphCanvasWrapper');
+  const graphTooltip = document.getElementById('graphTooltip');
+  const miniSparkline = document.getElementById('miniPeopleSparkline');
+  const miniSparklinePeak = document.getElementById('miniSparklinePeak');
+
+  const gMetricCurrent = document.getElementById('gMetricCurrent');
+  const gMetricCurrentSub = document.getElementById('gMetricCurrentSub');
+  const gMetricPeak = document.getElementById('gMetricPeak');
+  const gMetricPeakTime = document.getElementById('gMetricPeakTime');
+  const gMetricAvg = document.getElementById('gMetricAvg');
+  const gMetricTotal = document.getElementById('gMetricTotal');
+  const graphOccupancyDensity = document.getElementById('graphOccupancyDensity');
+  const graphDataPointCount = document.getElementById('graphDataPointCount');
+
+  const graphLiveStatus = document.getElementById('graphLiveStatus');
+  const graphLiveStatusText = document.getElementById('graphLiveStatusText');
+  const graphPulseDot = document.getElementById('graphPulseDot');
+
+  const chkSeriesTotal = document.getElementById('chkSeriesTotal');
+  const chkSeriesStaff = document.getElementById('chkSeriesStaff');
+  const chkSeriesVisitors = document.getElementById('chkSeriesVisitors');
+
+  const btnToggleSimulate = document.getElementById('btnToggleSimulate');
+  const btnPauseGraph = document.getElementById('btnPauseGraph');
+  const btnExportCsv = document.getElementById('btnExportCsv');
+  const btnExportGraphPng = document.getElementById('btnExportGraphPng');
+  const btnClearGraph = document.getElementById('btnClearGraph');
+
+  const TIMELINE_STORAGE_KEY = 'ceova_people_timeline_v2';
+  let peopleTimeline = [];
+  try {
+    const saved = localStorage.getItem(TIMELINE_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        const twoHoursAgo = Date.now() - 2 * 3600 * 1000;
+        peopleTimeline = parsed.filter(p => p && p.timestamp > twoHoursAgo);
+      }
+    }
+  } catch (_) {}
+
+  // Populate baseline 30s so the graph starts with a clean baseline
+  if (peopleTimeline.length === 0) {
+    const baseNow = Date.now();
+    for (let i = 30; i >= 0; i--) {
+      peopleTimeline.push({
+        timestamp: baseNow - (i * 1000),
+        totalCount: 0,
+        staffCount: 0,
+        visitorCount: 0,
+        cumulativeCount: 0
+      });
+    }
+  }
+
+  let selectedRange = 60; // 60, 300, 900, 3600, or 'all'
+  let isGraphPaused = false;
+  let pauseFreezeTime = null;
+  let isSimulating = false;
+  let simCycleStep = 0;
+  let simCounts = { total: 0, staff: 0, visitors: 0 };
+  let hoverState = null; // { mouseX, mouseY }
+
+  // Simulate Traffic Wave Generator
+  const simWaves = [
+    { total: 0, staff: 0, visitors: 0 },
+    { total: 1, staff: 1, visitors: 0 },
+    { total: 1, staff: 1, visitors: 0 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 3, staff: 1, visitors: 2 },
+    { total: 4, staff: 1, visitors: 3 }, // Peak surge
+    { total: 5, staff: 2, visitors: 3 }, // Maximum peak
+    { total: 4, staff: 2, visitors: 2 },
+    { total: 3, staff: 1, visitors: 2 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 1, staff: 0, visitors: 1 },
+    { total: 0, staff: 0, visitors: 0 },
+    { total: 0, staff: 0, visitors: 0 }
+  ];
+
+  function tickSimulation() {
+    if (!isSimulating) return;
+    simCycleStep = (simCycleStep + 1) % simWaves.length;
+    simCounts = { ...simWaves[simCycleStep] };
+  }
+
+  // 1-Second Sampling Engine
+  function samplePeopleTimeData() {
+    const now = Date.now();
+    let total = 0;
+    let staff = 0;
+    let visitors = 0;
+    let cumulative = humanTracker ? humanTracker.totalUniqueCount : 0;
+
+    if (isSimulating) {
+      total = simCounts.total;
+      staff = simCounts.staff;
+      visitors = simCounts.visitors;
+      cumulative = Math.max(cumulative, 6);
+    } else if (humanTracker) {
+      const liveTracks = humanTracker.getLiveTracks(now);
+      total = liveTracks.length;
+      for (const t of liveTracks) {
+        if (t.assignedRole === 'STAFF') staff++;
+        else visitors++;
+      }
+      cumulative = humanTracker.totalUniqueCount;
+    }
+
+    const sample = {
+      timestamp: now,
+      totalCount: total,
+      staffCount: staff,
+      visitorCount: visitors,
+      cumulativeCount: cumulative
+    };
+
+    peopleTimeline.push(sample);
+
+    // Keep max 7200 points (2 hours of 1-sec data)
+    if (peopleTimeline.length > 7200) {
+      peopleTimeline.shift();
+    }
+
+    // Debounced persist to localStorage
+    if (peopleTimeline.length % 5 === 0) {
+      try {
+        localStorage.setItem(TIMELINE_STORAGE_KEY, JSON.stringify(peopleTimeline.slice(-600)));
+      } catch (_) {}
+    }
+
+    // Sync with backend API
+    if (peopleTimeline.length % 3 === 0) {
+      fetch('/api/people/timeline/sample', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sample)
+      }).catch(() => {});
+    }
+
+    // Sync with Popular Times hourly aggregator (every 5 samples)
+    if (peopleTimeline.length % 5 === 0 && typeof recordLivePopularSample === 'function') {
+      recordLivePopularSample(total);
+    }
+
+    updateMetricsDisplay();
+  }
+
+  // Calculate & Update Metrics
+  function updateMetricsDisplay() {
+    if (peopleTimeline.length === 0) return;
+    const now = isGraphPaused && pauseFreezeTime ? pauseFreezeTime : Date.now();
+
+    // Determine current window points
+    let windowStart;
+    if (selectedRange === 'all') {
+      windowStart = peopleTimeline[0].timestamp;
+    } else {
+      windowStart = now - (selectedRange * 1000);
+    }
+
+    const windowPoints = peopleTimeline.filter(p => p.timestamp >= windowStart && p.timestamp <= now);
+    const pts = windowPoints.length > 0 ? windowPoints : peopleTimeline.slice(-30);
+
+    const latest = peopleTimeline[peopleTimeline.length - 1];
+    const current = latest ? latest.totalCount : 0;
+
+    let peak = 0;
+    let peakPt = null;
+    let sum = 0;
+
+    for (const p of pts) {
+      if (p.totalCount >= peak) {
+        peak = p.totalCount;
+        peakPt = p;
+      }
+      sum += p.totalCount;
+    }
+
+    const avg = pts.length > 0 ? (sum / pts.length).toFixed(1) : '0.0';
+    const totalUnique = humanTracker ? humanTracker.totalUniqueCount : (latest ? latest.cumulativeCount : 0);
+
+    if (gMetricCurrent) gMetricCurrent.textContent = String(current);
+    if (gMetricCurrentSub) {
+      gMetricCurrentSub.textContent = isSimulating ? 'simulated traffic' : (current === 1 ? '1 person in frame' : `${current} people in frame`);
+    }
+    if (gMetricPeak) gMetricPeak.textContent = String(peak);
+    if (gMetricPeakTime) {
+      gMetricPeakTime.textContent = peakPt ? new Date(peakPt.timestamp).toLocaleTimeString() : '--:--:--';
+    }
+    if (gMetricAvg) gMetricAvg.textContent = String(avg);
+    if (gMetricTotal) gMetricTotal.textContent = String(Math.max(totalUnique, peak));
+
+    if (graphDataPointCount) {
+      graphDataPointCount.textContent = `${peopleTimeline.length} points recorded (1s sample rate)`;
+    }
+
+    // Occupancy Density Badge
+    if (graphOccupancyDensity) {
+      graphOccupancyDensity.className = 'density-pill';
+      if (current === 0) {
+        graphOccupancyDensity.classList.add('density-vacant');
+        graphOccupancyDensity.textContent = 'STATUS: VACANT (0 PEOPLE)';
+      } else if (current <= 2) {
+        graphOccupancyDensity.classList.add('density-normal');
+        graphOccupancyDensity.textContent = `STATUS: NORMAL OCCUPANCY (${current} IN VIEW)`;
+      } else if (current <= 4) {
+        graphOccupancyDensity.classList.add('density-busy');
+        graphOccupancyDensity.textContent = `STATUS: MODERATE TRAFFIC (${current} IN VIEW)`;
+      } else {
+        graphOccupancyDensity.classList.add('density-surge');
+        graphOccupancyDensity.textContent = `STATUS: HIGH DENSITY SURGE (${current} IN VIEW)`;
+      }
+    }
+  }
+
+  // Draw Spline / Smooth Line Curve
+  function drawSmoothSeries(ctx, coords, strokeColor, fillColor = null, lineWidth = 2) {
+    if (!coords || coords.length === 0) return;
+
+    if (coords.length === 1) {
+      ctx.beginPath();
+      ctx.arc(coords[0].x, coords[0].y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = strokeColor;
+      ctx.fill();
+      return;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(coords[0].x, coords[0].y);
+
+    for (let i = 0; i < coords.length - 1; i++) {
+      const p0 = coords[i === 0 ? i : i - 1];
+      const p1 = coords[i];
+      const p2 = coords[i + 1];
+      const p3 = coords[i + 2 < coords.length ? i + 2 : i + 1];
+
+      // Catmull-Rom to Cubic Bezier control points conversion
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+    }
+
+    if (fillColor) {
+      ctx.save();
+      const fillPath = new Path2D();
+      fillPath.moveTo(coords[0].x, coords[0].y);
+
+      for (let i = 0; i < coords.length - 1; i++) {
+        const p0 = coords[i === 0 ? i : i - 1];
+        const p1 = coords[i];
+        const p2 = coords[i + 1];
+        const p3 = coords[i + 2 < coords.length ? i + 2 : i + 1];
+
+        const cp1x = p1.x + (p2.x - p0.x) / 6;
+        const cp1y = p1.y + (p2.y - p0.y) / 6;
+        const cp2x = p2.x - (p3.x - p1.x) / 6;
+        const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+        fillPath.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+      }
+
+      // Close path to bottom of chart
+      const bottomY = coords[coords.length - 1].bottomY;
+      fillPath.lineTo(coords[coords.length - 1].x, bottomY);
+      fillPath.lineTo(coords[0].x, bottomY);
+      fillPath.closePath();
+
+      ctx.fillStyle = fillColor;
+      ctx.fill(fillPath);
+      ctx.restore();
+    }
+
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = strokeColor;
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Main Canvas Rendering Function
+  function renderPeopleGraph() {
+    if (!peopleCanvas || !graphWrapper) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = graphWrapper.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+
+    if (w <= 0 || h <= 0) return;
+
+    if (peopleCanvas.width !== Math.round(w * dpr) || peopleCanvas.height !== Math.round(h * dpr)) {
+      peopleCanvas.width = Math.round(w * dpr);
+      peopleCanvas.height = Math.round(h * dpr);
+    }
+
+    const ctx = peopleCanvas.getContext('2d');
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = { top: 25, right: 65, bottom: 35, left: 45 };
+    const pw = w - pad.left - pad.right;
+    const ph = h - pad.top - pad.bottom;
+
+    if (pw <= 0 || ph <= 0) {
+      ctx.restore();
+      return;
+    }
+
+    const now = isGraphPaused && pauseFreezeTime ? pauseFreezeTime : Date.now();
+    let leftTime;
+    if (selectedRange === 'all') {
+      leftTime = peopleTimeline.length > 0 ? peopleTimeline[0].timestamp : (now - 60000);
+      if (now - leftTime < 60000) leftTime = now - 60000;
+    } else {
+      leftTime = now - (selectedRange * 1000);
+    }
+    const rightTime = now;
+    const timeSpan = Math.max(10000, rightTime - leftTime);
+
+    // Filter points in visible window
+    const pts = peopleTimeline.filter(p => p.timestamp >= (leftTime - 2000) && p.timestamp <= (rightTime + 2000));
+
+    // Calculate maximum Y
+    let maxVal = 0;
+    let peakVal = 0;
+    let peakPt = null;
+    let sum = 0;
+
+    for (const p of pts) {
+      if (p.totalCount > maxVal) maxVal = p.totalCount;
+      if (p.totalCount > peakVal) {
+        peakVal = p.totalCount;
+        peakPt = p;
+      }
+      sum += p.totalCount;
+    }
+
+    const avgVal = pts.length > 0 ? sum / pts.length : 0;
+    const yMax = Math.max(5, Math.ceil(maxVal * 1.2));
+
+    const getX = t => pad.left + ((t - leftTime) / timeSpan) * pw;
+    const getY = v => pad.top + ph - (v / yMax) * ph;
+
+    // 1. Grid Background & Axes
+    ctx.lineWidth = 1;
+    ctx.font = '10px JetBrains Mono, monospace';
+
+    // Horizontal grid lines
+    const yStep = yMax <= 6 ? 1 : (yMax <= 12 ? 2 : Math.ceil(yMax / 6));
+    for (let y = 0; y <= yMax; y += yStep) {
+      const py = Math.round(getY(y)) + 0.5;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = y === 0 ? 'rgba(255, 255, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)';
+      if (y !== 0) ctx.setLineDash([3, 4]);
+      ctx.moveTo(pad.left, py);
+      ctx.lineTo(pad.left + pw, py);
+      ctx.stroke();
+      ctx.restore();
+
+      // Y Label
+      ctx.fillStyle = y === 0 ? '#d4d4d8' : '#71717a';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(y), pad.left - 10, py);
+    }
+
+    // Y Axis unit title
+    ctx.save();
+    ctx.fillStyle = '#71717a';
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('PEOPLE', pad.left - 36, pad.top - 12);
+    ctx.restore();
+
+    // Vertical time grid lines
+    const numTicks = w > 600 ? 6 : 4;
+    for (let i = 0; i <= numTicks; i++) {
+      const tickTime = leftTime + (i / numTicks) * timeSpan;
+      const px = Math.round(getX(tickTime)) + 0.5;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.setLineDash([2, 4]);
+      ctx.moveTo(px, pad.top);
+      ctx.lineTo(px, pad.top + ph);
+      ctx.stroke();
+      ctx.restore();
+
+      // Time label
+      const d = new Date(tickTime);
+      const timeStr = d.toTimeString().split(' ')[0];
+      ctx.fillStyle = '#71717a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(timeStr, px, pad.top + ph + 8);
+    }
+
+    // 2. Reference Lines (Peak & Average)
+    if (peakVal > 0) {
+      const py = getY(peakVal);
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.moveTo(pad.left, py);
+      ctx.lineTo(pad.left + pw, py);
+      ctx.stroke();
+
+      // Peak Badge on right margin
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.18)';
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.5)';
+      ctx.beginPath();
+      ctx.roundRect(pad.left + pw + 4, py - 9, 56, 18, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`PEAK: ${peakVal}`, pad.left + pw + 32, py);
+      ctx.restore();
+    }
+
+    if (avgVal > 0 && Math.abs(getY(avgVal) - getY(peakVal)) > 14) {
+      const ay = getY(avgVal);
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1;
+      ctx.moveTo(pad.left, ay);
+      ctx.lineTo(pad.left + pw, ay);
+      ctx.stroke();
+
+      // Avg Badge on right margin
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.15)';
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.beginPath();
+      ctx.roundRect(pad.left + pw + 4, ay - 9, 56, 18, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`AVG: ${avgVal.toFixed(1)}`, pad.left + pw + 32, ay);
+      ctx.restore();
+    }
+
+    // 3. Prepare Series Coordinate Lists
+    const totalCoords = [];
+    const staffCoords = [];
+    const visitorCoords = [];
+
+    const bottomY = pad.top + ph;
+
+    for (const p of pts) {
+      const px = getX(p.timestamp);
+      totalCoords.push({ x: px, y: getY(p.totalCount), bottomY, raw: p });
+      staffCoords.push({ x: px, y: getY(p.staffCount), bottomY, raw: p });
+      visitorCoords.push({ x: px, y: getY(p.visitorCount), bottomY, raw: p });
+    }
+
+    // Clip rendering strictly to plot area
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pad.left - 2, pad.top - 5, pw + 4, ph + 10);
+    ctx.clip();
+
+    // Series 1: Total People (with gradient fill)
+    if (chkSeriesTotal && chkSeriesTotal.checked && totalCoords.length > 0) {
+      const totalGrad = ctx.createLinearGradient(0, pad.top, 0, pad.top + ph);
+      totalGrad.addColorStop(0, 'rgba(56, 189, 248, 0.28)');
+      totalGrad.addColorStop(0.7, 'rgba(56, 189, 248, 0.05)');
+      totalGrad.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+
+      drawSmoothSeries(ctx, totalCoords, '#38bdf8', totalGrad, 2.5);
+
+      // Pulse Radar indicator at rightmost point
+      const lastCoord = totalCoords[totalCoords.length - 1];
+      if (lastCoord) {
+        const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(lastCoord.x, lastCoord.y, 4 + pulse * 6, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(56, 189, 248, ${0.45 - pulse * 0.35})`;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(lastCoord.x, lastCoord.y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = '#38bdf8';
+        ctx.shadowBlur = 8;
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Series 2: Enrolled Staff (Green)
+    if (chkSeriesStaff && chkSeriesStaff.checked && staffCoords.length > 0) {
+      drawSmoothSeries(ctx, staffCoords, '#22c55e', null, 1.8);
+    }
+
+    // Series 3: Unknown / Visitors (Purple)
+    if (chkSeriesVisitors && chkSeriesVisitors.checked && visitorCoords.length > 0) {
+      drawSmoothSeries(ctx, visitorCoords, '#a855f7', null, 1.8);
+    }
+
+    // 4. Interactive Hover Crosshair & Dots
+    if (hoverState && hoverState.mouseX >= pad.left && hoverState.mouseX <= (pad.left + pw)) {
+      const hx = hoverState.mouseX;
+
+      // Vertical scanner crosshair line
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.moveTo(hx, pad.top);
+      ctx.lineTo(hx, pad.top + ph);
+      ctx.stroke();
+
+      // Find closest point
+      let closestPt = null;
+      let minDistance = Infinity;
+
+      for (const c of totalCoords) {
+        const d = Math.abs(c.x - hx);
+        if (d < minDistance) {
+          minDistance = d;
+          closestPt = c;
+        }
+      }
+
+      if (closestPt && minDistance < 40) {
+        // Draw glow circles on curves
+        if (chkSeriesTotal && chkSeriesTotal.checked) {
+          ctx.beginPath();
+          ctx.arc(closestPt.x, closestPt.y, 5, 0, Math.PI * 2);
+          ctx.fillStyle = '#38bdf8';
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([]);
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        // Update HTML Tooltip
+        if (graphTooltip) {
+          const raw = closestPt.raw;
+          const timeStr = new Date(raw.timestamp).toLocaleTimeString();
+          let statusText = 'Vacant';
+          if (raw.totalCount >= 5) statusText = 'Crowd Surge';
+          else if (raw.totalCount >= 3) statusText = 'Moderate Occupancy';
+          else if (raw.totalCount >= 1) statusText = 'Normal Occupancy';
+
+          graphTooltip.innerHTML = `
+            <div class="graph-tooltip-time">🕒 ${timeStr}</div>
+            <div class="graph-tooltip-row">
+              <span style="color:var(--accent-sky);">👥 Total People:</span>
+              <strong>${raw.totalCount}</strong>
+            </div>
+            <div class="graph-tooltip-row">
+              <span style="color:var(--accent-grass);">👔 Staff:</span>
+              <strong>${raw.staffCount}</strong>
+            </div>
+            <div class="graph-tooltip-row">
+              <span style="color:#a855f7;">🚶 Visitors:</span>
+              <strong>${raw.visitorCount}</strong>
+            </div>
+            <div class="graph-tooltip-row" style="margin-top:4px; font-size:0.68rem; color:var(--text-muted); border-top:1px dashed rgba(255,255,255,0.1); padding-top:2px;">
+              <span>Status:</span>
+              <span style="color:#fff;">${statusText}</span>
+            </div>
+          `;
+
+          // Clamp tooltip position inside canvas wrapper
+          const ttX = Math.max(70, Math.min(w - 70, closestPt.x));
+          const ttY = Math.max(50, closestPt.y - 15);
+          graphTooltip.style.left = `${ttX}px`;
+          graphTooltip.style.top = `${ttY}px`;
+          graphTooltip.classList.remove('hidden');
+        }
+      } else {
+        if (graphTooltip) graphTooltip.classList.add('hidden');
+      }
+      ctx.restore();
+    } else {
+      if (graphTooltip) graphTooltip.classList.add('hidden');
+    }
+
+    ctx.restore(); // Undo clip
+    ctx.restore(); // Undo setTransform
+
+    // 5. Draw Mini Sparkline in Side Panel
+    renderMiniSparkline(pts, peakVal);
+  }
+
+  // Draw Side-Panel Mini Sparkline
+  function renderMiniSparkline(pts, peakVal) {
+    if (!miniSparkline) return;
+    const sW = miniSparkline.width;
+    const sH = miniSparkline.height;
+    const sCtx = miniSparkline.getContext('2d');
+    sCtx.clearRect(0, 0, sW, sH);
+
+    if (miniSparklinePeak) {
+      miniSparklinePeak.textContent = `PEAK: ${peakVal}`;
+    }
+
+    if (!pts || pts.length === 0) return;
+
+    const last60 = pts.slice(-45);
+    let sMax = Math.max(3, ...last60.map(p => p.totalCount));
+
+    const coords = [];
+    for (let i = 0; i < last60.length; i++) {
+      const x = (i / (last60.length - 1 || 1)) * sW;
+      const y = sH - 4 - (last60[i].totalCount / sMax) * (sH - 8);
+      coords.push({ x, y, bottomY: sH });
+    }
+
+    const grad = sCtx.createLinearGradient(0, 0, 0, sH);
+    grad.addColorStop(0, 'rgba(34, 197, 94, 0.4)');
+    grad.addColorStop(1, 'rgba(34, 197, 94, 0.0)');
+
+    drawSmoothSeries(sCtx, coords, '#22c55e', grad, 1.8);
+  }
+
+  // Animation Loop (60 FPS smooth rendering)
+  let lastSampleCheck = 0;
+  function graphAnimationLoop() {
+    const now = Date.now();
+
+    // 1-second regular sampler
+    if (now - lastSampleCheck >= 1000) {
+      lastSampleCheck = now;
+      if (isSimulating) tickSimulation();
+      samplePeopleTimeData();
+    }
+
+    renderPeopleGraph();
+    requestAnimationFrame(graphAnimationLoop);
+  }
+
+  // UI Event Listeners for Controls
+  function setupGraphControls() {
+    // Time Range buttons
+    const rangeBtns = document.querySelectorAll('.time-range-btn');
+    rangeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        rangeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const r = btn.dataset.range;
+        selectedRange = r === 'all' ? 'all' : parseInt(r, 10);
+        updateMetricsDisplay();
+      });
+    });
+
+    // Pause / Resume Toggle
+    if (btnPauseGraph) {
+      btnPauseGraph.addEventListener('click', () => {
+        isGraphPaused = !isGraphPaused;
+        if (isGraphPaused) {
+          pauseFreezeTime = Date.now();
+          btnPauseGraph.textContent = '▶ Resume';
+          btnPauseGraph.classList.add('btn-primary');
+          btnPauseGraph.classList.remove('btn-secondary');
+          if (graphLiveStatus) {
+            graphLiveStatus.classList.add('paused');
+            graphLiveStatusText.textContent = 'PAUSED';
+            graphPulseDot.className = 'pulse-dot';
+          }
+        } else {
+          pauseFreezeTime = null;
+          btnPauseGraph.textContent = '⏸ Pause';
+          btnPauseGraph.classList.remove('btn-primary');
+          btnPauseGraph.classList.add('btn-secondary');
+          if (graphLiveStatus) {
+            graphLiveStatus.classList.remove('paused');
+            graphLiveStatusText.textContent = 'LIVE TRACKING';
+            graphPulseDot.className = 'pulse-dot online';
+          }
+        }
+      });
+    }
+
+    // Simulate Traffic Wave Toggle
+    if (btnToggleSimulate) {
+      btnToggleSimulate.addEventListener('click', () => {
+        isSimulating = !isSimulating;
+        if (isSimulating) {
+          simCycleStep = 0;
+          btnToggleSimulate.textContent = '⚡ Stop Sim';
+          btnToggleSimulate.classList.add('btn-primary');
+          btnToggleSimulate.classList.remove('btn-secondary');
+        } else {
+          btnToggleSimulate.textContent = '⚡ Simulate Traffic';
+          btnToggleSimulate.classList.remove('btn-primary');
+          btnToggleSimulate.classList.add('btn-secondary');
+          simCounts = { total: 0, staff: 0, visitors: 0 };
+        }
+      });
+    }
+
+    // Export CSV
+    if (btnExportCsv) {
+      btnExportCsv.addEventListener('click', () => {
+        if (peopleTimeline.length === 0) {
+          alert('No timeline data to export yet.');
+          return;
+        }
+
+        let csv = 'Timestamp_MS,DateTime_ISO,Time_Local,Total_People,Staff_Count,Visitor_Count\n';
+        for (const pt of peopleTimeline) {
+          const d = new Date(pt.timestamp);
+          csv += `${pt.timestamp},${d.toISOString()},"${d.toLocaleTimeString()}",${pt.totalCount},${pt.staffCount},${pt.visitorCount}\n`;
+        }
+
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ceova_people_occupancy_timeline_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Export Snapshot PNG
+    if (btnExportGraphPng && peopleCanvas) {
+      btnExportGraphPng.addEventListener('click', () => {
+        try {
+          const snapCanvas = document.createElement('canvas');
+          snapCanvas.width = 1200;
+          snapCanvas.height = 630;
+          const sCtx = snapCanvas.getContext('2d');
+
+          // Dark cyber background
+          sCtx.fillStyle = '#08080c';
+          sCtx.fillRect(0, 0, 1200, 630);
+
+          // Top Header Banner
+          sCtx.fillStyle = '#38bdf8';
+          sCtx.font = 'bold 22px Plus Jakarta Sans, sans-serif';
+          sCtx.fillText('CEOVA VISION CCTV // PEOPLE OCCUPANCY OVER TIME', 40, 48);
+
+          sCtx.fillStyle = '#8e8e93';
+          sCtx.font = '14px JetBrains Mono, monospace';
+          sCtx.fillText(`Report Generated: ${new Date().toLocaleString()} | CCTV CAM-01`, 40, 76);
+
+          // Summary Stats Pill Bar
+          sCtx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+          sCtx.fillRect(40, 96, 1120, 60);
+
+          sCtx.fillStyle = '#22c55e';
+          sCtx.font = 'bold 15px JetBrains Mono, monospace';
+          sCtx.fillText(`CURRENT: ${gMetricCurrent?.textContent || 0}`, 60, 132);
+
+          sCtx.fillStyle = '#f59e0b';
+          sCtx.fillText(`PEAK: ${gMetricPeak?.textContent || 0} (${gMetricPeakTime?.textContent || '--'})`, 280, 132);
+
+          sCtx.fillStyle = '#38bdf8';
+          sCtx.fillText(`AVG OCCUPANCY: ${gMetricAvg?.textContent || 0} / min`, 580, 132);
+
+          sCtx.fillStyle = '#c084fc';
+          sCtx.fillText(`TOTAL UNIQUE IDs: ${gMetricTotal?.textContent || 0}`, 880, 132);
+
+          // Draw main chart into snapshot
+          sCtx.drawImage(peopleCanvas, 40, 175, 1120, 410);
+
+          const dataUrl = snapCanvas.toDataURL('image/png');
+          const a = document.createElement('a');
+          a.href = dataUrl;
+          a.download = `ceova_people_graph_${Date.now()}.png`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } catch (e) {
+          alert('Snapshot failed: ' + e.message);
+        }
+      });
+    }
+
+    // Reset Timeline
+    if (btnClearGraph) {
+      btnClearGraph.addEventListener('click', () => {
+        if (confirm('Clear all recorded people timeline data?')) {
+          peopleTimeline = [];
+          const baseNow = Date.now();
+          for (let i = 20; i >= 0; i--) {
+            peopleTimeline.push({
+              timestamp: baseNow - (i * 1000),
+              totalCount: 0,
+              staffCount: 0,
+              visitorCount: 0,
+              cumulativeCount: 0
+            });
+          }
+          try {
+            localStorage.removeItem(TIMELINE_STORAGE_KEY);
+          } catch (_) {}
+          fetch('/api/people/timeline', { method: 'DELETE' }).catch(() => {});
+          updateMetricsDisplay();
+        }
+      });
+    }
+
+    // Mouse Tracking for Interactive Tooltip & Crosshair
+    if (graphWrapper) {
+      graphWrapper.addEventListener('mousemove', (e) => {
+        const rect = graphWrapper.getBoundingClientRect();
+        hoverState = {
+          mouseX: e.clientX - rect.left,
+          mouseY: e.clientY - rect.top
+        };
+      });
+
+      graphWrapper.addEventListener('mouseleave', () => {
+        hoverState = null;
+        if (graphTooltip) graphTooltip.classList.add('hidden');
+      });
+    }
+
+    // Series Checkbox listeners
+    if (chkSeriesTotal) chkSeriesTotal.addEventListener('change', () => renderPeopleGraph());
+    if (chkSeriesStaff) chkSeriesStaff.addEventListener('change', () => renderPeopleGraph());
+    if (chkSeriesVisitors) chkSeriesVisitors.addEventListener('change', () => renderPeopleGraph());
+
+    // Window Resize Handler
+    window.addEventListener('resize', () => {
+      renderPeopleGraph();
+      renderPopularTimesGraph();
+    });
+  }
+
+  // =========================================================
+  // POPULAR TIMES (DAY & HOURLY HISTOGRAM ENGINE)
+  // =========================================================
+  const popularTimesCanvas = document.getElementById('popularTimesCanvas');
+  const popularChartWrapper = document.getElementById('popularChartWrapper');
+  const popularTooltip = document.getElementById('popularTooltip');
+  const popularDaySelect = document.getElementById('popularDaySelect');
+  const btnPrevDay = document.getElementById('btnPrevDay');
+  const btnNextDay = document.getElementById('btnNextDay');
+  const popPeakHour = document.getElementById('popPeakHour');
+  const popDailyTotal = document.getElementById('popDailyTotal');
+  const popCurrentStatus = document.getElementById('popCurrentStatus');
+  const btnSeedPopular = document.getElementById('btnSeedPopular');
+  const btnExportPopularCsv = document.getElementById('btnExportPopularCsv');
+
+  const btnTabPopularTimes = document.getElementById('btnTabPopularTimes');
+  const btnTabLiveGraph = document.getElementById('btnTabLiveGraph');
+  const popularTimesSection = document.getElementById('popularTimesSection');
+  const liveGraphSection = document.getElementById('liveGraphSection');
+
+  const POPULAR_STORAGE_KEY = 'ceova_popular_times_cache_v3';
+  const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+  let popularTimesData = {};
+  let currentPopularDay = new Date().getDay(); // 0 = Sun, 1 = Mon, ..., 4 = Thu
+  let hoveredPopularSlot = null; // index 0..16
+
+  if (popularDaySelect) {
+    popularDaySelect.value = String(currentPopularDay);
+  }
+
+  // Purge deprecated mock cache from localStorage
+  try {
+    localStorage.removeItem('ceova_popular_times_cache_v2');
+    const cached = localStorage.getItem(POPULAR_STORAGE_KEY);
+    if (cached) {
+      popularTimesData = JSON.parse(cached);
+    }
+  } catch (_) {}
+
+  // Fetch from server SQLite database
+  async function loadPopularTimesData(day = currentPopularDay) {
+    try {
+      const res = await fetch(`/api/people/popular-times?day_of_week=${day}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.allDays) {
+        popularTimesData = data.allDays;
+        try {
+          localStorage.setItem(POPULAR_STORAGE_KEY, JSON.stringify(popularTimesData));
+        } catch (_) {}
+      }
+      renderPopularTimesGraph();
+    } catch (_) {
+      renderPopularTimesGraph();
+    }
+  }
+
+  // Record a live detection sample to the current day & hour
+  function recordLivePopularSample(count) {
+    const now = new Date();
+    const day = now.getDay();
+    const hour = now.getHours();
+
+    if (popularTimesData && popularTimesData[day] && popularTimesData[day].hours) {
+      const hrObj = popularTimesData[day].hours.find(h => h.hour === hour);
+      if (hrObj) {
+        const prevSamples = hrObj.sampleCount || 0;
+        if (prevSamples === 0) {
+          hrObj.sampleCount = 1;
+          hrObj.avgPeople = count;
+          hrObj.peakPeople = count;
+        } else {
+          hrObj.sampleCount = prevSamples + 1;
+          hrObj.avgPeople = Math.round(((hrObj.avgPeople * prevSamples + count) / hrObj.sampleCount));
+          hrObj.peakPeople = Math.max(hrObj.peakPeople || 0, count);
+        }
+
+        try {
+          localStorage.setItem(POPULAR_STORAGE_KEY, JSON.stringify(popularTimesData));
+        } catch (_) {}
+      }
+    }
+
+    // Also persist to SQLite backend
+    fetch('/api/people/popular-times/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ day_of_week: day, hour_of_day: hour, count })
+    }).catch(() => {});
+
+    if (day === currentPopularDay) {
+      renderPopularTimesGraph();
+    }
+  }
+
+  // Render Popular Times Histogram Canvas
+  function renderPopularTimesGraph() {
+    if (!popularTimesCanvas || !popularChartWrapper) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = popularChartWrapper.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+
+    if (w <= 0 || h <= 0) return;
+
+    if (popularTimesCanvas.width !== Math.round(w * dpr) || popularTimesCanvas.height !== Math.round(h * dpr)) {
+      popularTimesCanvas.width = Math.round(w * dpr);
+      popularTimesCanvas.height = Math.round(h * dpr);
+    }
+
+    const ctx = popularTimesCanvas.getContext('2d');
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // Visible hours range: 6 AM (6) to 10 PM (22) = 17 bars matching 6a, 9a, 12p, 3p, 6p, 9p
+    const startHour = 6;
+    const endHour = 22;
+    const totalBars = endHour - startHour + 1; // 17 bars
+
+    const dayObj = popularTimesData[currentPopularDay];
+    const allHours = dayObj && dayObj.hours ? dayObj.hours : [];
+
+    const chartHours = [];
+    let maxCount = 0;
+    let busiestHourObj = null;
+    let dailySum = 0;
+
+    for (let hr = startHour; hr <= endHour; hr++) {
+      const found = allHours.find(h => h.hour === hr);
+      const avg = found ? Math.round(found.avgPeople) : 0;
+      const peak = found ? found.peakPeople : 0;
+      const period = hr >= 12 ? 'PM' : 'AM';
+      const dispH = hr % 12 === 0 ? 12 : hr % 12;
+      const label = `${dispH} ${period}`;
+      const short = `${dispH}${period.toLowerCase()[0]}`;
+
+      if (avg > maxCount) {
+        maxCount = avg;
+        busiestHourObj = { hour: hr, label, avg, peak };
+      }
+      dailySum += avg;
+
+      chartHours.push({
+        hour: hr,
+        label,
+        short,
+        avg,
+        peak
+      });
+    }
+
+    // Update Summary Strip
+    if (popPeakHour) {
+      if (busiestHourObj && busiestHourObj.avg > 0) {
+        const nextH = (busiestHourObj.hour + 1) % 12 === 0 ? 12 : (busiestHourObj.hour + 1) % 12;
+        const nextPeriod = (busiestHourObj.hour + 1) >= 12 ? 'PM' : 'AM';
+        popPeakHour.textContent = `${busiestHourObj.label} - ${nextH} ${nextPeriod} (${busiestHourObj.avg} People Avg)`;
+      } else {
+        popPeakHour.textContent = '--';
+      }
+    }
+    if (popDailyTotal) {
+      popDailyTotal.textContent = `${dailySum} People Total`;
+    }
+    if (popCurrentStatus) {
+      const now = new Date();
+      const isToday = now.getDay() === currentPopularDay;
+      if (isToday) {
+        const currHour = now.getHours();
+        const currObj = chartHours.find(h => h.hour === currHour);
+        const liveCount = (peopleTimeline.length > 0) ? peopleTimeline[peopleTimeline.length - 1].totalCount : 0;
+        const typical = currObj ? currObj.avg : 0;
+        if (typical > 0) {
+          popCurrentStatus.textContent = `Live: ${liveCount} in view (usually ~${typical} at ${currHour % 12 || 12} ${currHour >= 12 ? 'PM' : 'AM'})`;
+        } else {
+          popCurrentStatus.textContent = `Live: ${liveCount} in view (recording real live detections)`;
+        }
+      } else {
+        popCurrentStatus.textContent = `Day View: ${DAY_NAMES[currentPopularDay]} (Recorded Traffic)`;
+      }
+    }
+
+    // Chart margins
+    const pad = { left: 16, right: 16, top: 22, bottom: 8 };
+    const chartW = w - pad.left - pad.right;
+    const chartH = h - pad.top - pad.bottom;
+    const slotW = chartW / totalBars;
+    const barW = Math.max(6, Math.min(26, slotW * 0.72));
+    const scaleMax = Math.max(10, Math.ceil(maxCount * 1.15));
+
+    const now = new Date();
+    const isToday = now.getDay() === currentPopularDay;
+    const currentHour = now.getHours();
+
+    // If completely clean (0 data across the day), display subtle live status notice
+    if (maxCount === 0) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.font = '500 12px Plus Jakarta Sans, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('No people recorded yet • Ready to track live CCTV detections', w / 2, pad.top + chartH / 2 - 6);
+      ctx.restore();
+    }
+
+    // Render bars
+    for (let i = 0; i < totalBars; i++) {
+      const item = chartHours[i];
+      const slotX = pad.left + i * slotW;
+      const barX = slotX + (slotW - barW) / 2;
+
+      let barH = 0;
+      if (item.avg > 0) {
+        barH = Math.max(4, (item.avg / scaleMax) * (chartH - 8));
+      }
+      const barY = pad.top + chartH - barH;
+
+      const isCurrentHour = isToday && (item.hour === currentHour);
+      const isHovered = hoveredPopularSlot === i;
+
+      ctx.save();
+
+      if (barH > 0) {
+        // Rounded bar top
+        const r = Math.min(4, barW / 2);
+        ctx.beginPath();
+        ctx.moveTo(barX, pad.top + chartH);
+        ctx.lineTo(barX, barY + r);
+        ctx.quadraticCurveTo(barX, barY, barX + r, barY);
+        ctx.lineTo(barX + barW - r, barY);
+        ctx.quadraticCurveTo(barX + barW, barY, barX + barW, barY + r);
+        ctx.lineTo(barX + barW, pad.top + chartH);
+        ctx.closePath();
+
+        if (isCurrentHour) {
+          // Vibrant Glowing Green for Live Current Hour
+          ctx.fillStyle = isHovered ? '#4ade80' : '#22c55e';
+          ctx.shadowColor = 'rgba(34, 197, 94, 0.7)';
+          ctx.shadowBlur = 10;
+        } else if (isHovered) {
+          // Highlighted Teal
+          ctx.fillStyle = '#38bdf8';
+          ctx.shadowColor = 'rgba(56, 189, 248, 0.6)';
+          ctx.shadowBlur = 8;
+        } else {
+          // Signature Google Maps teal color (#2a9d8f)
+          ctx.fillStyle = '#2a9d8f';
+        }
+
+        ctx.fill();
+
+        // If current hour, draw a small live pulsing beacon above it
+        if (isCurrentHour) {
+          const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, barY - 7, 3 + pulse * 2, 0, Math.PI * 2);
+          ctx.fillStyle = '#4ade80';
+          ctx.shadowColor = '#22c55e';
+          ctx.shadowBlur = 6;
+          ctx.fill();
+        }
+      } else {
+        if (isCurrentHour) {
+          // Subtle glowing live dot on the baseline for the current hour
+          const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, pad.top + chartH - 3, 3 + pulse, 0, Math.PI * 2);
+          ctx.fillStyle = '#22c55e';
+          ctx.shadowColor = 'rgba(34, 197, 94, 0.8)';
+          ctx.shadowBlur = 8;
+          ctx.fill();
+        } else {
+          // Subtle dot for 0 count
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, pad.top + chartH - 2, 1.5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.fill();
+        }
+      }
+
+      ctx.restore();
+    }
+
+    // Tooltip update
+    if (hoveredPopularSlot !== null && hoveredPopularSlot >= 0 && hoveredPopularSlot < totalBars) {
+      const item = chartHours[hoveredPopularSlot];
+      const slotX = pad.left + hoveredPopularSlot * slotW;
+      const barCenterX = slotX + slotW / 2;
+
+      let barH = item.avg > 0 ? Math.max(4, (item.avg / scaleMax) * (chartH - 8)) : 0;
+      const barTopY = pad.top + chartH - barH;
+
+      if (popularTooltip) {
+        const isCurrent = isToday && (item.hour === currentHour);
+        popularTooltip.innerHTML = `
+          <div style="font-weight:700; color:var(--accent-cyan); border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:3px; margin-bottom:3px;">
+            🕒 ${item.label} ${isCurrent ? '<span style="color:var(--accent-grass); font-size:0.65rem;">● LIVE</span>' : ''}
+          </div>
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <span style="color:#a1a1aa;">Average People:</span>
+            <strong style="color:#fff;">${item.avg}</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <span style="color:#a1a1aa;">Peak Occupancy:</span>
+            <strong style="color:#f59e0b;">${item.peak}</strong>
+          </div>
+        `;
+
+        const ttX = Math.max(60, Math.min(w - 60, barCenterX));
+        const ttY = Math.max(40, barTopY - 10);
+        popularTooltip.style.left = `${ttX}px`;
+        popularTooltip.style.top = `${ttY}px`;
+        popularTooltip.classList.remove('hidden');
+      }
+    } else {
+      if (popularTooltip) popularTooltip.classList.add('hidden');
+    }
+
+    ctx.restore();
+  }
+
+  // Popular Times Event Listeners
+  function setupPopularTimesControls() {
+    // Mode Switcher Tabs
+    if (btnTabPopularTimes && btnTabLiveGraph) {
+      btnTabPopularTimes.addEventListener('click', () => {
+        btnTabPopularTimes.classList.add('active');
+        btnTabLiveGraph.classList.remove('active');
+        if (popularTimesSection) popularTimesSection.style.display = 'flex';
+        if (liveGraphSection) liveGraphSection.style.display = 'none';
+        renderPopularTimesGraph();
+      });
+
+      btnTabLiveGraph.addEventListener('click', () => {
+        btnTabLiveGraph.classList.add('active');
+        btnTabPopularTimes.classList.remove('active');
+        if (popularTimesSection) popularTimesSection.style.display = 'none';
+        if (liveGraphSection) liveGraphSection.style.display = 'flex';
+        renderPeopleGraph();
+      });
+    }
+
+    // Day dropdown selector
+    if (popularDaySelect) {
+      popularDaySelect.addEventListener('change', () => {
+        currentPopularDay = parseInt(popularDaySelect.value, 10);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Previous day arrow
+    if (btnPrevDay) {
+      btnPrevDay.addEventListener('click', () => {
+        currentPopularDay = (currentPopularDay + 6) % 7;
+        if (popularDaySelect) popularDaySelect.value = String(currentPopularDay);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Next day arrow
+    if (btnNextDay) {
+      btnNextDay.addEventListener('click', () => {
+        currentPopularDay = (currentPopularDay + 1) % 7;
+        if (popularDaySelect) popularDaySelect.value = String(currentPopularDay);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Clear data button
+    if (btnSeedPopular) {
+      btnSeedPopular.addEventListener('click', async () => {
+        if (confirm('Clear all recorded people occupancy data and reset to 0?')) {
+          try {
+            await fetch('/api/people/popular-times/reset', { method: 'POST' });
+            try {
+              localStorage.removeItem(POPULAR_STORAGE_KEY);
+            } catch (_) {}
+            popularTimesData = {};
+            await loadPopularTimesData(currentPopularDay);
+            alert('All local occupancy data cleared and reset to 0.');
+          } catch (e) {
+            alert('Reset failed: ' + e.message);
+          }
+        }
+      });
+    }
+
+    // Export Popular Times CSV
+    if (btnExportPopularCsv) {
+      btnExportPopularCsv.addEventListener('click', () => {
+        const dayObj = popularTimesData[currentPopularDay];
+        if (!dayObj || !dayObj.hours || dayObj.hours.length === 0) {
+          alert('No hourly data available to export.');
+          return;
+        }
+
+        let csv = 'Day,Hour_24,Hour_Label,Average_People,Peak_People,Sample_Count\n';
+        for (const h of dayObj.hours) {
+          csv += `"${dayObj.dayName}",${h.hour},"${h.label}",${h.avgPeople},${h.peakPeople},${h.sampleCount || 10}\n`;
+        }
+
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ceova_popular_times_${dayObj.dayName.toLowerCase()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Mouse Tracking on Popular Times Canvas
+    if (popularChartWrapper) {
+      popularChartWrapper.addEventListener('mousemove', (e) => {
+        const rect = popularChartWrapper.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const padLeft = 16;
+        const padRight = 16;
+        const chartW = rect.width - padLeft - padRight;
+        const slotW = chartW / 17;
+
+        if (mouseX >= padLeft && mouseX <= (padLeft + chartW)) {
+          const slot = Math.floor((mouseX - padLeft) / slotW);
+          hoveredPopularSlot = Math.max(0, Math.min(16, slot));
+        } else {
+          hoveredPopularSlot = null;
+        }
+        renderPopularTimesGraph();
+      });
+
+      popularChartWrapper.addEventListener('mouseleave', () => {
+        hoveredPopularSlot = null;
+        if (popularTooltip) popularTooltip.classList.add('hidden');
+        renderPopularTimesGraph();
+      });
+    }
+  }
+
   // Apply initial saved preferences
   applyAspectMode(currentAspectMode, false);
   applyFitMode(currentFitMode, false);
@@ -2989,5 +4569,10 @@
   // Startup Initialization
   setupNetworkAndQR();
   initWebSocket();
+  checkActiveCameraOnLoad();
   fetchLivePeopleSummary();
+  setupGraphControls();
+  setupPopularTimesControls();
+  loadPopularTimesData();
+  graphAnimationLoop();
 })();

@@ -8,6 +8,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="css/style.css?v=2.9">
+  <link rel="stylesheet" href="css/ceova_ecosystem.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎥</text></svg>">
 </head>
 <body>
@@ -25,14 +26,17 @@
       </div>
       <div class="brand-text">
         <h1>CEOVA VISION <span class="version-tag">CCTV v2.5</span></h1>
-        <p>SMARTPHONE-TO-WEB SURVEILLANCE & STREAMING ENGINE</p>
+        <p>AUTONOMOUS CCTV SURVEILLANCE & STREAMING ENGINE</p>
       </div>
     </div>
 
     <div class="header-stats">
+      <a href="connect.html" class="stat-pill" style="text-decoration:none; color:var(--accent-sky); border-color:rgba(56, 189, 248, 0.4); font-weight:700;">
+        <span>📡 CONNECT CCTV CAMERA (AUTO BOT)</span>
+      </a>
       <div class="stat-pill" id="systemStatusPill">
         <span class="pulse-dot" id="systemPulse"></span>
-        <span id="systemStatusText">STANDBY / WAITING FOR PHONE</span>
+        <span id="systemStatusText">STANDBY / WAITING FOR CAMERA</span>
       </div>
       <div class="stat-pill" id="protocolPill">
         <span>MODE: <strong id="streamProtocolText" style="color:var(--accent-cyan)">WEBRTC P2P</strong></span>
@@ -112,42 +116,72 @@
           </div>
         </div>
 
-        <!-- Standby / QR Code Pairing Overlay (Shown when camera not connected) -->
+        <!-- Standby / Camera Login Overlay (Shown when camera not connected) -->
         <div class="standby-overlay" id="standbyOverlay">
           <div class="radar-spinner"></div>
-          <div class="qr-card">
-            <button class="qr-close-btn" id="btnCloseStandby" title="Close QR Pairing Dialog">✕</button>
-            <div class="pairing-title">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
+          <div class="qr-card camera-login-card" style="max-width: 480px; align-items: stretch; text-align: left; padding: 2rem 2.2rem;">
+            <button class="qr-close-btn" id="btnCloseStandby" title="Close Dialog">✕</button>
+            
+            <div class="pairing-title" style="justify-content: flex-start; margin-bottom: 0.25rem;">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="var(--accent-sky)" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
               </svg>
-              <span>CONNECT PHONE CAMERA</span>
+              <span>CONNECT CCTV CAMERA</span>
             </div>
             
-            <p class="pairing-subtitle">Scan this QR code with your iPhone or Android camera to start streaming video to this screen in real-time.</p>
+            <p class="pairing-subtitle" style="text-align: left; margin-bottom: 1rem; line-height: 1.5; font-size: 0.88rem; color: #94a3b8;">
+              Enter your CCTV admin username & password. Our autonomous background bot will sweep the local network, test manufacturer codes (Hikvision, Dahua, ONVIF), and stream video directly.
+            </p>
 
-            <div class="qr-wrapper">
-              <img id="pairingQrImg" class="qr-image" alt="Pairing QR Code" src="" />
-            </div>
-
-            <div class="pairing-actions">
-              <div class="ip-selector-wrap">
-                <label for="networkIpSelect">Stream Host:</label>
-                <select id="networkIpSelect" class="ip-select"></select>
+            <form id="overlayCctvForm" style="display:flex; flex-direction:column; gap:14px; width:100%;">
+              <div class="form-group" style="margin-bottom:0;">
+                <label style="display:block; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
+                  CCTV Admin Username
+                </label>
+                <div style="position:relative; display:flex; align-items:center;">
+                  <span style="position:absolute; left:12px; color:#64748b; font-size:0.9rem;">👤</span>
+                  <input type="text" id="overlayCctvUsername" class="custom-input" value="admin" placeholder="admin" required
+                         style="width:100%; box-sizing:border-box; background:rgba(8,8,12,0.9); border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:10px 12px 10px 38px; color:#fff; font-size:0.92rem;" />
+                </div>
               </div>
 
-              <div class="copy-link-bar">
-                <input type="text" id="cameraUrlInput" class="copy-input" readonly />
-                <button class="btn btn-secondary" id="btnCopyLink" title="Copy URL">
-                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-                  </svg>
-                  Copy
-                </button>
-                <a href="#" target="_blank" id="btnOpenTab" class="btn btn-primary" title="Open camera in a new browser tab for testing">
-                  Test Tab
-                </a>
+              <div class="form-group" style="margin-bottom:0;">
+                <label style="display:block; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
+                  Target Camera IP <span style="font-weight:400; color:#64748b; font-size:0.7rem;">(Optional — leave blank to auto-sweep)</span>
+                </label>
+                <div style="position:relative; display:flex; align-items:center;">
+                  <span style="position:absolute; left:12px; color:#64748b; font-size:0.9rem;">🌐</span>
+                  <input type="text" id="overlayCctvIp" class="custom-input" placeholder="e.g. 10.13.4.26 (auto-detected if blank)"
+                         style="width:100%; box-sizing:border-box; background:rgba(8,8,12,0.9); border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:10px 12px 10px 38px; color:#fff; font-size:0.92rem;" />
+                </div>
               </div>
+
+              <div class="form-group" style="margin-bottom:0;">
+                <label style="display:block; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
+                  CCTV Password
+                </label>
+                <div style="position:relative; display:flex; align-items:center;">
+                  <span style="position:absolute; left:12px; color:#64748b; font-size:0.9rem;">🔑</span>
+                  <input type="password" id="overlayCctvPassword" class="custom-input" placeholder="Enter camera password..."
+                         style="width:100%; box-sizing:border-box; background:rgba(8,8,12,0.9); border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:10px 12px 10px 38px; color:#fff; font-size:0.92rem;" />
+                </div>
+              </div>
+
+              <!-- Live Bot Status & Terminal Line -->
+              <div id="overlayBotStatusBox" style="background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:8px 12px; font-family:'JetBrains Mono',monospace; font-size:0.75rem; color:#94a3b8; display:flex; align-items:center; gap:8px;">
+                <span class="pulse-dot" id="overlayBotPulse" style="width:7px; height:7px; border-radius:50%; background:#64748b; box-shadow:none;"></span>
+                <span id="overlayBotStatusText" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Bot Status: Awaiting credentials...</span>
+              </div>
+
+              <button type="submit" id="btnOverlayConnect" class="btn-launch-scan" style="margin-top:4px; padding:12px 18px; font-size:0.95rem; border-radius:10px; width:100%; background:linear-gradient(135deg, #0284c7 0%, #0369a1 100%); border:1px solid rgba(56, 189, 248, 0.4); color:#fff; font-weight:700; cursor:pointer;">
+                ⚡ Auto-Detect & Connect Camera
+              </button>
+            </form>
+
+            <div style="display:flex; justify-content:space-between; align-items:center; width:100%; margin-top:0.75rem; font-size:0.78rem; color:#64748b;">
+              <a href="connect.html" style="color:var(--accent-sky); text-decoration:none; font-weight:600;">Open Full Bot Radar & Scanner →</a>
+              <button type="button" id="btnSimulateOverlay" style="background:none; border:none; color:#94a3b8; cursor:pointer; text-decoration:underline; font-size:0.78rem;">Test Demo Feed</button>
             </div>
           </div>
         </div>
@@ -258,9 +292,9 @@
             <span id="rotateBtnText">0°</span>
           </button>
 
-          <!-- 11. Pair QR Modal Button -->
-          <button class="btn btn-secondary" id="btnShowQr" title="Show QR Code Pairing Dialog">
-            QR Code
+          <!-- 11. Connect CCTV Camera Dialog Button -->
+          <button class="btn btn-secondary" id="btnShowQr" title="Show CCTV Camera Login Dialog">
+            📡 Connect Camera
           </button>
 
           <!-- 12. Fullscreen -->
@@ -269,6 +303,205 @@
               <path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
             </svg>
           </button>
+        </div>
+      </div>
+
+      <!-- People Occupancy Over Time Graph Panel (Real-Time Timeline Analytics) -->
+      <div class="panel-card people-analytics-panel" id="peopleAnalyticsPanel">
+        <!-- Analytics Mode Switcher Tabs -->
+        <div class="analytics-mode-tabs">
+          <button class="analytics-tab-btn active" id="btnTabPopularTimes">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:#2a9d8f;">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
+            </svg>
+            Popular Times (Day & Hourly Graph)
+          </button>
+          <button class="analytics-tab-btn" id="btnTabLiveGraph">
+            <span class="live-indicator-dot"></span>
+            Live Real-Time Stream (60s / 5m / 1h)
+          </button>
+        </div>
+
+        <!-- VIEW 1: Popular Times (Day & Hourly Breakdown - Matches Google Maps style) -->
+        <div class="popular-times-container" id="popularTimesSection">
+          <div class="popular-times-header">
+            <div class="popular-times-title-wrap">
+              <h3 class="popular-times-title">Popular times</h3>
+              <div class="popular-day-selector">
+                <button class="day-nav-arrow" id="btnPrevDay" title="Previous Day">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M15 19l-7-7 7-7"/></svg>
+                </button>
+                <select id="popularDaySelect" class="popular-day-select">
+                  <option value="1">Mondays</option>
+                  <option value="2">Tuesdays</option>
+                  <option value="3">Wednesdays</option>
+                  <option value="4" selected>Thursdays</option>
+                  <option value="5">Fridays</option>
+                  <option value="6">Saturdays</option>
+                  <option value="0">Sundays</option>
+                </select>
+                <button class="day-nav-arrow" id="btnNextDay" title="Next Day">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 5l7 7-7 7"/></svg>
+                </button>
+              </div>
+              <span class="info-circle" title="Calculated from real people detected per hour across each day of the week. Persisted locally in SQLite and localStorage.">?</span>
+            </div>
+
+            <!-- Right Meta Badges -->
+            <div class="popular-meta-info">
+              <span class="saved-local-badge" id="popularLocalBadge">
+                <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width:13px; height:13px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"/></svg>
+                Saved in Local DB & Storage
+              </span>
+              <div class="btn-group">
+                <button class="btn btn-secondary btn-xs" id="btnSeedPopular" title="Clear all local data and reset to 0">🗑️ Clear Data</button>
+                <button class="btn btn-secondary btn-xs" id="btnExportPopularCsv" title="Export Popular Times as CSV">📥 Export CSV</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Summary Metric Strip for Selected Day -->
+          <div class="popular-summary-strip">
+            <div class="pop-stat">
+              <span class="pop-lbl">Busiest Hour:</span>
+              <strong id="popPeakHour" style="color:var(--accent-cyan);">--</strong>
+            </div>
+            <div class="pop-stat">
+              <span class="pop-lbl">Daily Total Traffic:</span>
+              <strong id="popDailyTotal" style="color:#ffffff;">0 People Total</strong>
+            </div>
+            <div class="pop-stat">
+              <span class="pop-lbl">Current Live Traffic:</span>
+              <strong id="popCurrentStatus" style="color:var(--accent-green);">Live: 0 in view</strong>
+            </div>
+          </div>
+
+          <!-- The Popular Times Bar Graph Canvas with Middle Dashed Line -->
+          <div class="popular-chart-wrapper" id="popularChartWrapper">
+            <div class="popular-dashed-line"></div>
+            <canvas id="popularTimesCanvas"></canvas>
+            <!-- Hover Tooltip -->
+            <div class="popular-bar-tooltip hidden" id="popularTooltip"></div>
+          </div>
+
+          <!-- Exact Bottom Axis Ticks: 6a, 9a, 12p, 3p, 6p, 9p -->
+          <div class="popular-axis-ticks">
+            <span>6a</span>
+            <span>9a</span>
+            <span>12p</span>
+            <span>3p</span>
+            <span>6p</span>
+            <span>9p</span>
+          </div>
+        </div>
+
+        <!-- VIEW 2: Real-Time Live Streaming Timeline -->
+        <div id="liveGraphSection" style="display:none; flex-direction:column; gap:1.15rem;">
+          <div class="panel-header" style="flex-wrap: wrap; gap: 0.75rem;">
+            <div class="panel-title" style="display: flex; align-items: center; gap: 8px;">
+              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:var(--accent-sky); width:18px; height:18px;">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M16 8v8m-4-5v5m-4-2v2m-2 4h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+              </svg>
+              <span>PEOPLE COUNT RESPECT TO TIME (REAL-TIME TIMELINE GRAPH)</span>
+              <span class="live-rec-pill" id="graphLiveStatus">
+                <span class="pulse-dot online" id="graphPulseDot"></span>
+                <span id="graphLiveStatusText">LIVE TRACKING</span>
+              </span>
+            </div>
+
+            <!-- Quick Occupancy Metrics Row -->
+            <div class="graph-metrics-row">
+              <div class="graph-metric-pill pill-current">
+                <span class="metric-label">CURRENT OCCUPANCY</span>
+                <span class="metric-val" id="gMetricCurrent">0</span>
+                <span class="metric-unit" id="gMetricCurrentSub">in vision frame</span>
+              </div>
+              <div class="graph-metric-pill pill-peak">
+                <span class="metric-label">PEAK OCCUPANCY</span>
+                <span class="metric-val" id="gMetricPeak">0</span>
+                <span class="metric-unit" id="gMetricPeakTime">--:--:--</span>
+              </div>
+              <div class="graph-metric-pill pill-avg">
+                <span class="metric-label">AVERAGE OCCUPANCY</span>
+                <span class="metric-val" id="gMetricAvg">0.0</span>
+                <span class="metric-unit">people / minute</span>
+              </div>
+              <div class="graph-metric-pill pill-total">
+                <span class="metric-label">TOTAL UNIQUE SEEN</span>
+                <span class="metric-val" id="gMetricTotal">0</span>
+                <span class="metric-unit">cumulative IDs</span>
+              </div>
+            </div>
+
+            <!-- Filter & Controls Toolbar -->
+            <div class="graph-toolbar">
+              <!-- Time Window Selector -->
+              <div class="btn-group time-range-group" id="graphRangeGroup">
+                <button class="time-range-btn active" data-range="60" id="btnRange60s" title="Show last 60 seconds">60s</button>
+                <button class="time-range-btn" data-range="300" id="btnRange5m" title="Show last 5 minutes">5m</button>
+                <button class="time-range-btn" data-range="900" id="btnRange15m" title="Show last 15 minutes">15m</button>
+                <button class="time-range-btn" data-range="3600" id="btnRange1h" title="Show last 1 hour">1h</button>
+                <button class="time-range-btn" data-range="all" id="btnRangeAll" title="Show entire session">All</button>
+              </div>
+
+              <!-- Series Layer Toggles -->
+              <div class="series-toggle-group">
+                <label class="series-check-label" title="Toggle Total People curve">
+                  <input type="checkbox" id="chkSeriesTotal" checked />
+                  <span class="series-dot" style="background:var(--accent-sky)"></span> Total
+                </label>
+                <label class="series-check-label" title="Toggle Enrolled Staff curve">
+                  <input type="checkbox" id="chkSeriesStaff" checked />
+                  <span class="series-dot" style="background:var(--accent-grass)"></span> Staff
+                </label>
+                <label class="series-check-label" title="Toggle Unknown / Visitors curve">
+                  <input type="checkbox" id="chkSeriesVisitors" checked />
+                  <span class="series-dot" style="background:#a855f7"></span> Visitors
+                </label>
+              </div>
+
+              <!-- Graph Actions -->
+              <div class="graph-action-group">
+                <button class="btn btn-secondary btn-xs" id="btnToggleSimulate" title="Simulate realistic people traffic to test graph without camera">
+                  ⚡ Simulate Traffic
+                </button>
+                <button class="btn btn-secondary btn-xs" id="btnPauseGraph" title="Pause / Resume Live Timeline Scrolling">
+                  ⏸ Pause
+                </button>
+                <button class="btn btn-secondary btn-xs" id="btnExportCsv" title="Download timeline data as CSV file">
+                  📥 Export CSV
+                </button>
+                <button class="btn btn-secondary btn-xs" id="btnExportGraphPng" title="Save snapshot image of graph">
+                  📸 Snapshot
+                </button>
+                <button class="btn btn-secondary btn-xs" id="btnClearGraph" title="Reset timeline history">
+                  🗑️ Reset
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Canvas Chart Display -->
+          <div class="graph-canvas-wrapper" id="graphCanvasWrapper">
+            <canvas id="peopleOccupancyCanvas"></canvas>
+            <!-- Interactive Cyber Tooltip -->
+            <div class="graph-tooltip hidden" id="graphTooltip"></div>
+          </div>
+
+          <!-- Graph Footer & Status Legend -->
+          <div class="graph-footer">
+            <div class="graph-legend">
+              <span class="legend-item"><span class="legend-line" style="background:var(--accent-sky);"></span> Total People</span>
+              <span class="legend-item"><span class="legend-line" style="background:var(--accent-grass);"></span> Enrolled Staff</span>
+              <span class="legend-item"><span class="legend-line" style="background:#a855f7;"></span> Unknown / Visitors</span>
+              <span class="legend-item"><span class="legend-dashed" style="border-color:#f59e0b;"></span> Peak Occupancy</span>
+              <span class="legend-item"><span class="legend-dashed" style="border-color:var(--accent-sky);"></span> Average Occupancy</span>
+            </div>
+            <div class="graph-status-info">
+              <span id="graphOccupancyDensity" class="density-pill density-vacant">STATUS: VACANT</span>
+              <span id="graphDataPointCount" style="color:var(--text-muted); font-size:0.75rem; font-family:var(--font-mono);">0 points (1s sample rate)</span>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -295,6 +528,15 @@
             LIVE PEOPLE RECOGNITION
           </div>
           <span class="badge-count" id="livePeopleCountBadge">0</span>
+        </div>
+
+        <!-- Mini Sparkline for quick glance -->
+        <div style="padding: 0.4rem 0.2rem 0.4rem 0.2rem;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; font-size:0.68rem; font-family:var(--font-mono); color:var(--text-muted);">
+            <span>TREND (LAST 60s)</span>
+            <span id="miniSparklinePeak" style="color:#f59e0b;">PEAK: 0</span>
+          </div>
+          <canvas id="miniPeopleSparkline" width="300" height="38" style="width:100%; height:38px; display:block; border-radius:6px; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.06);"></canvas>
         </div>
 
         <div id="livePeopleContainer" style="max-height: 220px; overflow-y: auto;">
@@ -615,5 +857,6 @@
   <script src="vendor/tf.min.js"></script>
   <script src="vendor/coco-ssd.min.js"></script>
   <script src="js/viewer.js?v=2.9"></script>
+  <script src="js/ceova_ecosystem.js?v=1.0"></script>
 </body>
 </html>

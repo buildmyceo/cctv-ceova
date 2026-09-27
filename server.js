@@ -169,6 +169,41 @@ yoloBridge.start().catch(err => {
 const identityModule = createIdentityRouter({ broadcastCallback: broadcastIdentityEvent });
 app.use('/api', identityModule.router);
 
+// Mount Ceova Ecosystem Private API & SSO Routes
+const { createCeovaInternalRouter } = require('./api/ceova_internal_routes');
+const ceovaInternalRouter = createCeovaInternalRouter();
+app.use(ceovaInternalRouter);
+
+// Mount Autonomous Camera Discovery Bot Routes
+const { createCameraDiscoveryRouter } = require('./api/camera_discovery_routes');
+const { rtspStreamManager } = require('./services/rtsp_stream_manager');
+const cameraDiscoveryRouter = createCameraDiscoveryRouter();
+app.use(cameraDiscoveryRouter);
+
+// Forward live RTSP camera frames over WebSockets to all viewer rooms
+rtspStreamManager.setWsBroadcastCallback((msg) => {
+  for (const [roomId, room] of rooms.entries()) {
+    broadcastToRoom(roomId, null, msg, 'viewer');
+  }
+});
+
+// Auto-start primary camera RTSP stream from database if available
+setTimeout(() => {
+  try {
+    const { getDatabase } = require('./db/database');
+    const db = getDatabase();
+    const defaultOrg = 'ORG-DEFAULT';
+    const cameras = db.getCameras(defaultOrg);
+    if (cameras && cameras.length > 0) {
+      const primaryCam = cameras[0];
+      console.log(`[RTSP] Auto-starting primary camera: ${primaryCam.name} (${primaryCam.id})`);
+      rtspStreamManager.startStream(primaryCam.id, primaryCam.stream_url);
+    }
+  } catch (err) {
+    console.warn('[RTSP] Failed to auto-start primary camera:', err.message);
+  }
+}, 1500);
+
 // Mount CEOVA AI Bot Architecture
 const { registry, hardwareBot, performanceSchedulerBot, trackingBot, adaptiveInferenceBot } = require('./bots');
 
@@ -179,10 +214,12 @@ registry.initializeAll().catch(err => {
 
 // Clean shutdown handler
 process.on('SIGINT', () => {
+  rtspStreamManager.stopAll();
   yoloBridge.stop();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  rtspStreamManager.stopAll();
   yoloBridge.stop();
   process.exit(0);
 });
@@ -238,8 +275,18 @@ wss.on('connection', (ws, req) => {
             room.viewers.add(ws);
             console.log(`[Room ${currentRoomId}] Viewer connected. Total viewers: ${room.viewers.size}`);
             
-            // Check if broadcaster is already active
-            if (room.broadcasters.size > 0) {
+            // Check if RTSP camera stream or phone broadcaster is already active
+            if (rtspStreamManager.activeCameraId) {
+              const activeStream = rtspStreamManager.getStream(rtspStreamManager.activeCameraId);
+              ws.send(JSON.stringify({
+                type: 'status',
+                status: 'broadcaster-ready',
+                source: 'rtsp',
+                cameraId: rtspStreamManager.activeCameraId,
+                streamUrl: `/api/cameras/${rtspStreamManager.activeCameraId}/stream.mjpg`,
+                fps: activeStream ? activeStream.fps : 15
+              }));
+            } else if (room.broadcasters.size > 0) {
               ws.send(JSON.stringify({
                 type: 'status',
                 status: 'broadcaster-ready',
@@ -349,18 +396,14 @@ httpsServer.listen(PORT, '0.0.0.0', () => {
   const defaultCameraUrl = `https://${primaryIp}:${PORT}/camera.html?room=CAM-1`;
 
   console.log('\n=============================================================');
-  console.log('  🎥 CEOVA CCTV CAMERA & PHONE STREAMING SERVER STARTED');
+  console.log('  🎥 CEOVA VISION CCTV // AUTONOMOUS SURVEILLANCE ENGINE');
   console.log('=============================================================');
   console.log(`  🖥️  Desktop Web CCTV Hub:    ${localUrl}`);
+  console.log(`  📡  Camera Discovery Radar:  ${localUrl}/connect.html`);
   console.log(`  📶  LAN Network URL:         ${lanUrl}`);
-  console.log(`  📱  Direct Phone Stream:     ${defaultCameraUrl}`);
   console.log('=============================================================');
-  console.log('  📲 SCAN THIS QR CODE WITH YOUR PHONE CAMERA TO CONNECT:');
-  console.log('-------------------------------------------------------------');
-  qrcodeTerminal.generate(defaultCameraUrl, { small: true });
-  console.log('-------------------------------------------------------------');
-  console.log('  💡 NOTE: When opening on your phone for the first time,');
-  console.log('     tap "Advanced" -> "Proceed" to accept local HTTPS cert.');
+  console.log('  🔐 MODE: Autonomous CCTV Admin & Password Bot Discovery');
+  console.log('  ⚡ Network Sweeper & RTSP Stream Authenticator Active');
   console.log('=============================================================\n');
 });
 

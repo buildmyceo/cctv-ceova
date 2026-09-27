@@ -11,6 +11,7 @@ const { TrackingBot } = require('./tracking_bot');
 const { AdaptiveInferenceBot } = require('./adaptive_inference_bot');
 const { HardwareBot } = require('./hardware_bot');
 const { PerformanceSchedulerBot } = require('./performance_scheduler_bot');
+const { CameraDiscoveryBot } = require('./camera_discovery_bot');
 
 class BotRegistry {
   constructor() {
@@ -57,13 +58,14 @@ class BotRegistry {
   }
 }
 
-// Default singleton registry pre-populated with Phase 1-4 Bots
+// Default singleton registry pre-populated with Bots
 const registry = new BotRegistry();
 
 const hardwareBot = registry.register(new HardwareBot());
 const performanceSchedulerBot = registry.register(new PerformanceSchedulerBot());
 const trackingBot = registry.register(new TrackingBot());
 const adaptiveInferenceBot = registry.register(new AdaptiveInferenceBot());
+const cameraDiscoveryBot = registry.register(new CameraDiscoveryBot());
 
 module.exports = {
   registry,
@@ -72,8 +74,10 @@ module.exports = {
   AdaptiveInferenceBot,
   HardwareBot,
   PerformanceSchedulerBot,
+  CameraDiscoveryBot,
   hardwareBot,
   performanceSchedulerBot,
   trackingBot,
-  adaptiveInferenceBot
+  adaptiveInferenceBot,
+  cameraDiscoveryBot
 };
