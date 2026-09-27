@@ -21,6 +21,11 @@ class YoloBridge {
     this.modelName = 'yolov8n';
     this.autoStart = options.autoStart !== false;
     this.lastHealthCheck = 0;
+    this.httpAgent = new http.Agent({
+      keepAlive: true,
+      maxSockets: 16,
+      keepAliveMsecs: 10000
+    });
   }
 
   /**
@@ -28,7 +33,7 @@ class YoloBridge {
    */
   async checkHealth() {
     return new Promise((resolve) => {
-      const req = http.get(`${this.baseUrl}/health`, { timeout: 1500 }, (res) => {
+      const req = http.get(`${this.baseUrl}/health`, { agent: this.httpAgent, timeout: 1500 }, (res) => {
         let data = '';
         res.on('data', chunk => { data += chunk; });
         res.on('end', () => {
@@ -82,7 +87,8 @@ class YoloBridge {
     const serviceScript = path.join(__dirname, '..', 'yolo_service.py');
 
     try {
-      this.pythonProcess = spawn('python3', [serviceScript], {
+      const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+      this.pythonProcess = spawn(pythonCmd, [serviceScript], {
         cwd: path.join(__dirname, '..', '..'),
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false
@@ -147,6 +153,7 @@ class YoloBridge {
         port: this.port,
         path: endpoint,
         method: 'POST',
+        agent: this.httpAgent,
         headers: {
           'Content-Type': 'application/json',
           'Content-Length': Buffer.byteLength(payload)
@@ -188,9 +195,10 @@ class YoloBridge {
    * @param {Object} [options] - { conf: 0.35, iou: 0.45 }
    */
   async detectHumans(base64Image, options = {}) {
-    const conf = options.conf || 0.35;
+    const conf = options.conf || 0.40;
     const iou = options.iou || 0.45;
-    return this._postJson('/detect', { image: base64Image, conf, iou }, 2500);
+    const payload = { image: base64Image, conf, iou, classes: [0] };
+    return this._postJson('/detect', payload, 2500);
   }
 
   /**

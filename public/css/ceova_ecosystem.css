@@ -1,0 +1,275 @@
+/* CEOVA CCTV // Ceova Ecosystem Integration Styles */
+
+.ceova-ecosystem-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 24px;
+  background: linear-gradient(90deg, rgba(16, 24, 39, 0.95), rgba(15, 23, 42, 0.95));
+  border-bottom: 1px solid rgba(56, 189, 248, 0.2);
+  color: #e2e8f0;
+  font-family: 'Plus Jakarta Sans', sans-serif;
+  font-size: 13px;
+  backdrop-filter: blur(12px);
+  position: sticky;
+  top: 0;
+  z-index: 1000;
+}
+
+.ceova-ecosystem-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ceova-badge-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(14, 165, 233, 0.15);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  color: #38bdf8;
+  padding: 3px 10px;
+  border-radius: 9999px;
+  font-weight: 700;
+  font-size: 11px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.ceova-badge-tag .pulse-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #10b981;
+  box-shadow: 0 0 8px #10b981;
+}
+
+.ceova-meta-item {
+  color: #94a3b8;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ceova-meta-item strong {
+  color: #f8fafc;
+  font-weight: 600;
+}
+
+.ceova-plan-pill {
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-weight: 700;
+  font-size: 11px;
+  text-transform: uppercase;
+  background: rgba(139, 92, 246, 0.2);
+  color: #c084fc;
+  border: 1px solid rgba(168, 85, 247, 0.3);
+}
+
+.ceova-plan-pill.enterprise {
+  background: rgba(245, 158, 11, 0.2);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.4);
+}
+
+.ceova-plan-pill.professional {
+  background: rgba(14, 165, 233, 0.2);
+  color: #38bdf8;
+  border-color: rgba(14, 165, 233, 0.4);
+}
+
+.ceova-plan-pill.starter {
+  background: rgba(100, 116, 139, 0.2);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.3);
+}
+
+.ceova-ecosystem-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.ceova-quota-meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+
+.ceova-quota-bar-bg {
+  width: 80px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.ceova-quota-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #10b981, #06b6d4);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.ceova-btn-sm {
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: #f1f5f9;
+  padding: 4px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ceova-btn-sm:hover {
+  background: rgba(255, 255, 255, 0.16);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Modal styling for unauthenticated / pairing state */
+.ceova-pair-modal-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(10, 15, 29, 0.85);
+  backdrop-filter: blur(16px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 9999;
+}
+
+.ceova-pair-modal-box {
+  background: #0f172a;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7), 0 0 30px rgba(56, 189, 248, 0.15);
+  border-radius: 16px;
+  width: 90%;
+  max-width: 520px;
+  padding: 28px;
+  color: #e2e8f0;
+}
+
+.ceova-pair-modal-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.ceova-pair-modal-header h3 {
+  font-size: 18px;
+  font-weight: 700;
+  color: #f8fafc;
+  margin: 0;
+}
+
+.ceova-pair-modal-header p {
+  font-size: 13px;
+  color: #94a3b8;
+  margin: 4px 0 0 0;
+}
+
+.ceova-pair-options {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin: 20px 0;
+}
+
+.ceova-pair-card {
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+  padding: 16px;
+  transition: border-color 0.2s;
+}
+
+.ceova-pair-card:hover {
+  border-color: rgba(56, 189, 248, 0.4);
+}
+
+.ceova-pair-card h4 {
+  font-size: 14px;
+  font-weight: 600;
+  color: #38bdf8;
+  margin: 0 0 6px 0;
+}
+
+.ceova-pair-card p {
+  font-size: 12px;
+  color: #94a3b8;
+  margin: 0 0 12px 0;
+}
+
+.ceova-input-field {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(15, 23, 42, 0.8);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  padding: 8px 12px;
+  color: #f8fafc;
+  font-size: 13px;
+  font-family: inherit;
+  margin-bottom: 10px;
+}
+
+.ceova-input-field:focus {
+  outline: none;
+  border-color: #38bdf8;
+  box-shadow: 0 0 0 2px rgba(56, 189, 248, 0.2);
+}
+
+.ceova-btn-primary {
+  width: 100%;
+  background: linear-gradient(135deg, #0284c7, #0369a1);
+  border: none;
+  color: #ffffff;
+  padding: 10px 16px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: filter 0.2s;
+}
+
+.ceova-btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.ceova-btn-preset-group {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+
+.ceova-btn-preset {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #e2e8f0;
+  padding: 8px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: center;
+  transition: all 0.2s;
+}
+
+.ceova-btn-preset:hover {
+  background: rgba(56, 189, 248, 0.15);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+}

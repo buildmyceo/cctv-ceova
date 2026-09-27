@@ -781,9 +781,10 @@
             t.direction = '';
           }
 
-          // Smooth exponential position & dimension interpolation
-          const posAlpha = 0.30;
-          const sizeAlpha = 0.22;
+          // Highly responsive position tracking: zero lag on movement
+          const moveDist = Math.hypot(hx - t.x, hy - t.y);
+          const posAlpha = moveDist > 16 ? 0.95 : (moveDist > 6 ? 0.88 : 0.65);
+          const sizeAlpha = 0.75;
           t.x = t.x * (1 - posAlpha) + hx * posAlpha;
           t.y = t.y * (1 - posAlpha) + hy * posAlpha;
           t.width = t.width * (1 - sizeAlpha) + hw * sizeAlpha;
@@ -1143,7 +1144,25 @@
       const liveTracks = phoneTracker.getLiveTracks(wallClockNow);
 
       liveTracks.forEach(human => {
-        drawMobileHumanBox(ctx, human.x, human.y, human.width, human.height, human);
+        const dtSec = Math.min(0.20, Math.max(0, (wallClockNow - (human.lastSeenWallClock || wallClockNow)) / 1000));
+        const targetX = human.x + (human.vx || 0) * dtSec;
+        const targetY = human.y + (human.vy || 0) * dtSec;
+        const targetW = human.width;
+        const targetH = human.height;
+
+        if (human.renderX === undefined || isNaN(human.renderX) || Math.hypot(targetX - human.renderX, targetY - human.renderY) > 50) {
+          human.renderX = targetX;
+          human.renderY = targetY;
+          human.renderW = targetW;
+          human.renderH = targetH;
+        } else {
+          human.renderX = human.renderX * 0.20 + targetX * 0.80;
+          human.renderY = human.renderY * 0.20 + targetY * 0.80;
+          human.renderW = human.renderW * 0.25 + targetW * 0.75;
+          human.renderH = human.renderH * 0.25 + targetH * 0.75;
+        }
+
+        drawMobileHumanBox(ctx, human.renderX, human.renderY, human.renderW, human.renderH, human);
       });
 
       if (phoneBotText) {
@@ -1160,7 +1179,7 @@
   async function triggerNextPhoneInference() {
     if (!phoneBotActive) return;
     if (isPhoneInferring || !phoneHumanModel || !cameraPreview || cameraPreview.readyState < 2) {
-      phoneInferenceTimeoutId = setTimeout(triggerNextPhoneInference, 40);
+      phoneInferenceTimeoutId = setTimeout(triggerNextPhoneInference, 15);
       return;
     }
 

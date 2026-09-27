@@ -299,6 +299,116 @@ class ReidExtractor {
       }
     };
   }
+
+  /**
+   * REMIND-Inspired Multi-Prototype Similarity Computation
+   * Evaluates query embedding against an array of prototypes (Stable & Working Banks).
+   * Calculates s = max_k similarity(query, prototype_k).
+   * @param {Float32Array|Array<number>} queryEmbedding 
+   * @param {Array<Float32Array|Array<number>|Object>} prototypes 
+   * @returns {Object} { maxSimilarity, bestIndex, bestPrototype, allScores, matchCategory }
+   */
+  computeMultiPrototypeSimilarity(queryEmbedding, prototypes = []) {
+    if (!queryEmbedding || !Array.isArray(prototypes) || prototypes.length === 0) {
+      return { maxSimilarity: 0.0, bestIndex: -1, bestPrototype: null, allScores: [], matchCategory: 'WEAK' };
+    }
+
+    let maxSim = 0.0;
+    let bestIndex = -1;
+    let bestDetails = null;
+    const allScores = [];
+
+    for (let i = 0; i < prototypes.length; i++) {
+      const p = prototypes[i];
+      const protoVec = Array.isArray(p) || p instanceof Float32Array ? p : (p && p.embedding ? p.embedding : null);
+      if (!protoVec || protoVec.length !== this.embeddingDimension) {
+        allScores.push(0.0);
+        continue;
+      }
+
+      const res = this.computeSimilarity(queryEmbedding, protoVec);
+      allScores.push(res.similarity);
+
+      if (res.similarity > maxSim) {
+        maxSim = res.similarity;
+        bestIndex = i;
+        bestDetails = res;
+      }
+    }
+
+    let matchCategory = 'WEAK';
+    if (maxSim >= this.strongMatchThreshold) {
+      matchCategory = 'STRONG';
+    } else if (maxSim >= this.uncertainMatchThreshold) {
+      matchCategory = 'UNCERTAIN';
+    }
+
+    return {
+      maxSimilarity: Number(maxSim.toFixed(4)),
+      bestIndex,
+      bestPrototype: bestIndex >= 0 ? prototypes[bestIndex] : null,
+      details: bestDetails ? bestDetails.details : null,
+      allScores,
+      matchCategory
+    };
+  }
+
+  /**
+   * REMIND-Inspired Ambiguity & Provisional Safeguard Gating
+   * Prevents false identity locks when candidates have similar visual appearance (e.g. uniform color).
+   * @param {Array<Object>} rankedCandidates - List of candidates sorted descending by score [{ id, score, ... }]
+   * @param {Object} [options]
+   * @returns {Object} { isAmbiguous, isProvisional, status, margin, bestCandidate }
+   */
+  evaluateAmbiguity(rankedCandidates = [], options = {}) {
+    const ambiguityMargin = options.ambiguityMargin || 0.04;
+    const confirmedThreshold = options.confirmedThreshold || 0.76;
+    const provisionalThreshold = options.provisionalThreshold || 0.68;
+
+    if (!rankedCandidates || rankedCandidates.length === 0) {
+      return {
+        isAmbiguous: false,
+        isProvisional: false,
+        status: 'UNMATCHED',
+        margin: 1.0,
+        bestCandidate: null
+      };
+    }
+
+    const rank1 = rankedCandidates[0];
+    const rank2 = rankedCandidates.length > 1 ? rankedCandidates[1] : null;
+    const margin = rank2 ? Number((rank1.score - rank2.score).toFixed(4)) : 1.0;
+
+    let isAmbiguous = false;
+    let isProvisional = false;
+    let status = 'UNMATCHED';
+
+    if (rank1.score >= confirmedThreshold) {
+      if (rank2 && margin < ambiguityMargin && rank2.score >= provisionalThreshold) {
+        // High similarity on both rank1 and rank2 -> Visually Ambiguous!
+        isAmbiguous = true;
+        isProvisional = true;
+        status = 'AMBIGUOUS';
+      } else {
+        status = 'CONFIRMED';
+      }
+    } else if (rank1.score >= provisionalThreshold) {
+      isProvisional = true;
+      status = 'PROVISIONAL';
+      if (rank2 && margin < ambiguityMargin) {
+        isAmbiguous = true;
+        status = 'AMBIGUOUS';
+      }
+    }
+
+    return {
+      isAmbiguous,
+      isProvisional,
+      status, // 'CONFIRMED', 'PROVISIONAL', 'AMBIGUOUS', 'UNMATCHED'
+      margin,
+      bestCandidate: rank1
+    };
+  }
 }
 
 module.exports = {

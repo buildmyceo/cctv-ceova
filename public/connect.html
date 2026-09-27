@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Connect CCTV Camera // Autonomous Discovery Bot</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css?v=3.1">
+  <link rel="stylesheet" href="css/ceova_ecosystem.css">
+  <link rel="stylesheet" href="css/connect.css">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📡</text></svg>">
+</head>
+<body>
+  <!-- Ambient Background Mesh -->
+  <div class="ambient-glow glow-sky"></div>
+  <div class="ambient-glow glow-grass"></div>
+
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="brand-section">
+      <div class="brand-logo" style="background: rgba(14, 165, 233, 0.15); border-color: rgba(56, 189, 248, 0.4);">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="var(--accent-sky)" stroke-width="2">
+          <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+        </svg>
+      </div>
+      <div class="brand-text">
+        <h1>CEOVA VISION <span class="version-tag">CAMERA BOT</span></h1>
+        <p>AUTONOMOUS CCTV IP & PROTOCOL DISCOVERY ENGINE</p>
+      </div>
+    </div>
+
+    <div class="header-stats">
+      <a href="index.html" class="stat-pill" style="text-decoration:none; color:#e2e8f0; cursor:pointer;">
+        <span>🎥 OPEN CCTV SURVEILLANCE HUB</span>
+      </a>
+      <div class="live-clock" id="liveClock">00:00:00 UTC</div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <div class="connect-container">
+    <!-- Hero Section -->
+    <div class="connect-hero">
+      <div class="connect-hero-tag">
+        <span class="pulse-dot" style="background:#0ea5e9; box-shadow:0 0 8px #0ea5e9;"></span>
+        AUTONOMOUS CCTV BOT ENGINE
+      </div>
+      <h1>Connect Any CCTV Camera</h1>
+      <p>
+        No QR codes or mobile streaming required. Simply enter your camera admin credentials—our background
+        <strong>CameraDiscoveryBot</strong> sweeps the local network, discovers active camera IPs, and tests every
+        manufacturer stream code (Hikvision, Dahua, Uniview, Reolink, ONVIF) until your live stream connects.
+      </p>
+    </div>
+
+    <!-- Main Two-Column Layout -->
+    <div class="connect-layout">
+      <!-- Left Column: Credential Form Card -->
+      <div class="glass-panel">
+        <div class="panel-header">
+          <h3>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-sky)" stroke-width="2">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+            </svg>
+            Camera Credentials
+          </h3>
+          <span class="badge">SECURE</span>
+        </div>
+
+        <form id="cameraConnectForm">
+          <div class="form-group">
+            <label class="form-label" for="inputUsername">CCTV Username <span>(usually 'admin')</span></label>
+            <div class="input-wrapper">
+              <span class="input-icon">👤</span>
+              <input type="text" id="inputUsername" class="custom-input" value="admin" placeholder="admin" required />
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="inputPassword">CCTV Password</label>
+            <div class="input-wrapper">
+              <span class="input-icon">🔑</span>
+              <input type="password" id="inputPassword" class="custom-input" placeholder="Enter camera password..." />
+              <button type="button" class="password-toggle" id="togglePasswordBtn" title="Show/Hide Password">🔒</button>
+            </div>
+          </div>
+
+          <!-- Advanced Network Hint (Optional) -->
+          <button type="button" class="advanced-toggle" id="btnToggleAdvanced">
+            ▼ Advanced: Specific IP or Subnet Scope (Optional)
+          </button>
+
+          <div class="advanced-drawer" id="advancedDrawer">
+            <div class="form-group">
+              <label class="form-label" for="inputTargetIp">Target Camera IP <span>(optional)</span></label>
+              <div class="input-wrapper">
+                <span class="input-icon">🎯</span>
+                <input type="text" id="inputTargetIp" class="custom-input" placeholder="e.g. 192.168.1.55" />
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label" for="inputSubnetHint">Custom Subnet Hint <span>(optional)</span></label>
+              <div class="input-wrapper">
+                <span class="input-icon">🌐</span>
+                <input type="text" id="inputSubnetHint" class="custom-input" placeholder="e.g. 192.168.1.0/24" />
+              </div>
+            </div>
+          </div>
+
+          <button type="submit" class="btn-launch-scan" id="btnLaunchScan">
+            ⚡ Launch Autonomous Discovery Bot
+          </button>
+        </form>
+
+        <div style="margin-top: 1.5rem; text-align:center;">
+          <button type="button" id="btnSimulateCamera" class="ceova-btn-sm" style="width:100%; justify-content:center; padding:8px;">
+            🧪 Simulate Local Camera (Test Mode)
+          </button>
+        </div>
+      </div>
+
+      <!-- Right Column: Live Radar Scanner & Bot Terminal -->
+      <div class="glass-panel">
+        <div class="panel-header">
+          <h3>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--accent-grass)" stroke-width="2">
+              <circle cx="12" cy="12" r="10"></circle>
+              <path d="M12 2a10 10 0 0 1 10 10"></path>
+            </svg>
+            Bot Scanner & Telemetry Feed
+          </h3>
+          <button type="button" class="btn-stop-scan" id="btnStopScan" style="display:none;">
+            ⏹ Stop Scan
+          </button>
+        </div>
+
+        <!-- Radar Animation -->
+        <div class="radar-wrapper" id="radarWrapper">
+          <div class="radar-circle">
+            <div class="radar-sweep"></div>
+            <div class="radar-crosshair-h"></div>
+            <div class="radar-crosshair-v"></div>
+          </div>
+        </div>
+
+        <!-- Progress Tracking -->
+        <div class="scan-progress-box">
+          <div class="progress-labels">
+            <span id="scanStatusText" style="font-weight:700; color:#38bdf8;">BOT READY - AWAITING INPUT</span>
+            <span id="scanPercentText" style="font-weight:700; color:#ffffff;">0%</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-fill" id="scanProgressBar"></div>
+          </div>
+        </div>
+
+        <!-- Monospace Telemetry Terminal -->
+        <div class="telemetry-terminal" id="telemetryTerminal">
+          <div class="terminal-line">> CEOVA CameraDiscoveryBot initialized.</div>
+          <div class="terminal-line">> Ready to scan local network for CCTV media streams (RTSP/ONVIF).</div>
+        </div>
+
+        <!-- Discovered & Verified Cameras List -->
+        <div class="matched-cameras-container" id="matchedCamerasContainer" style="display:none;">
+          <h4 style="font-size:0.95rem; color:var(--accent-grass); margin-bottom:0.75rem; text-transform:uppercase; letter-spacing:0.05em;">
+            ✓ Connected CCTV Cameras
+          </h4>
+          <div id="matchedCamerasList"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="js/ceova_ecosystem.js?v=1.0"></script>
+  <script src="js/connect.js?v=1.0"></script>
+  <script>
+    // Live Clock Header
+    function updateClock() {
+      const el = document.getElementById('liveClock');
+      if (el) el.textContent = new Date().toUTCString().slice(17, 25) + ' UTC';
+    }
+    setInterval(updateClock, 1000);
+    updateClock();
+  </script>
+</body>
+</html>

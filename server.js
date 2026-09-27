@@ -169,6 +169,124 @@ yoloBridge.start().catch(err => {
 const identityModule = createIdentityRouter({ broadcastCallback: broadcastIdentityEvent });
 app.use('/api', identityModule.router);
 
+// Mount Ceova Ecosystem Private API & SSO Routes
+const { createCeovaInternalRouter } = require('./api/ceova_internal_routes');
+const ceovaInternalRouter = createCeovaInternalRouter();
+app.use(ceovaInternalRouter);
+
+// Mount Autonomous Camera Discovery Bot Routes
+const { createCameraDiscoveryRouter } = require('./api/camera_discovery_routes');
+const { rtspStreamManager } = require('./services/rtsp_stream_manager');
+const cameraDiscoveryRouter = createCameraDiscoveryRouter();
+app.use(cameraDiscoveryRouter);
+
+// HTTP Video Stream Proxy — forwards IP Webcam (Android) streams to the browser
+// Supports Basic Auth embedded in URL: http://user:pass@host:port/path
+app.get('/api/proxy-stream', (req, res) => {
+  const streamUrl = req.query.url;
+  if (!streamUrl) return res.status(400).json({ error: 'Missing url query param' });
+
+  try {
+    const targetUrl = new URL(streamUrl);
+    const isHttps = targetUrl.protocol === 'https:';
+    const lib = isHttps ? require('https') : require('http');
+
+    // Build request options — extract credentials and send as Authorization header
+    const reqOptions = {
+      hostname: targetUrl.hostname,
+      port: targetUrl.port,
+      path: targetUrl.pathname + (targetUrl.search || ''),
+      method: 'GET',
+      rejectUnauthorized: false,
+      headers: {
+        'User-Agent': 'CEOVA-CCTV/1.0',
+        'Accept': '*/*'
+      }
+    };
+
+    if (targetUrl.username && targetUrl.password) {
+      const creds = Buffer.from(`${decodeURIComponent(targetUrl.username)}:${decodeURIComponent(targetUrl.password)}`).toString('base64');
+      reqOptions.headers['Authorization'] = `Basic ${creds}`;
+    }
+
+    // Disable socket timeouts for continuous streams
+    if (req.socket) {
+      req.socket.setTimeout(0);
+      if (req.socket.setKeepAlive) req.socket.setKeepAlive(true, 1000);
+      if (req.socket.setNoDelay) req.socket.setNoDelay(true);
+    }
+
+    const proxyReq = lib.request(reqOptions, (proxyRes) => {
+      if (proxyRes.statusCode === 401) {
+        console.warn('[ProxyStream] 401 Unauthorized — check camera credentials');
+        if (!res.headersSent) res.status(401).json({ error: 'Camera returned 401 Unauthorized. Check credentials.' });
+        return;
+      }
+
+      // Pass down exact content-type (crucial for multipart/x-mixed-replace; boundary=...)
+      const contentType = proxyRes.headers['content-type'] || 'image/jpeg';
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
+      res.setHeader('Pragma', 'no-cache');
+      res.setHeader('Expires', '0');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+
+      if (res.socket && res.socket.setNoDelay) {
+        res.socket.setNoDelay(true);
+      }
+
+      proxyRes.pipe(res);
+    });
+
+    proxyReq.on('socket', (sock) => {
+      sock.setNoDelay(true);
+    });
+
+    proxyReq.on('error', (err) => {
+      if (!res.headersSent) {
+        res.status(502).json({ error: 'Camera unreachable', detail: err.message });
+      }
+    });
+
+    proxyReq.end();
+    req.on('close', () => {
+      try { proxyReq.destroy(); } catch (_) {}
+    });
+  } catch (err) {
+    res.status(400).json({ error: 'Invalid stream URL', detail: err.message });
+  }
+});
+
+// Forward live RTSP camera frames over WebSockets to all viewer rooms
+rtspStreamManager.setWsBroadcastCallback((msg) => {
+  for (const [roomId, room] of rooms.entries()) {
+    broadcastToRoom(roomId, null, msg, 'viewer');
+  }
+});
+
+// Auto-start primary camera RTSP stream from database if available
+setTimeout(() => {
+  try {
+    const { getDatabase } = require('./db/database');
+    const db = getDatabase();
+    const defaultOrg = 'ORG-DEFAULT';
+    const cameras = db.getCameras(defaultOrg);
+    if (cameras && cameras.length > 0) {
+      const primaryCam = cameras[0];
+      const isRtsp = primaryCam.stream_url && (primaryCam.stream_url.startsWith('rtsp://') || primaryCam.stream_url.startsWith('rtsps://'));
+      if (isRtsp) {
+        console.log(`[RTSP] Auto-starting primary camera: ${primaryCam.name} (${primaryCam.id})`);
+        rtspStreamManager.startStream(primaryCam.id, primaryCam.stream_url);
+      } else {
+        console.log(`[RTSP] Skipping auto-start for HTTP camera: ${primaryCam.name}`);
+      }
+    }
+  } catch (err) {
+    console.warn('[RTSP] Failed to auto-start primary camera:', err.message);
+  }
+}, 1500);
+
 // Mount CEOVA AI Bot Architecture
 const { registry, hardwareBot, performanceSchedulerBot, trackingBot, adaptiveInferenceBot } = require('./bots');
 
@@ -179,10 +297,12 @@ registry.initializeAll().catch(err => {
 
 // Clean shutdown handler
 process.on('SIGINT', () => {
+  rtspStreamManager.stopAll();
   yoloBridge.stop();
   process.exit(0);
 });
 process.on('SIGTERM', () => {
+  rtspStreamManager.stopAll();
   yoloBridge.stop();
   process.exit(0);
 });
@@ -238,8 +358,18 @@ wss.on('connection', (ws, req) => {
             room.viewers.add(ws);
             console.log(`[Room ${currentRoomId}] Viewer connected. Total viewers: ${room.viewers.size}`);
             
-            // Check if broadcaster is already active
-            if (room.broadcasters.size > 0) {
+            // Check if RTSP camera stream or phone broadcaster is already active
+            if (rtspStreamManager.activeCameraId) {
+              const activeStream = rtspStreamManager.getStream(rtspStreamManager.activeCameraId);
+              ws.send(JSON.stringify({
+                type: 'status',
+                status: 'broadcaster-ready',
+                source: 'rtsp',
+                cameraId: rtspStreamManager.activeCameraId,
+                streamUrl: `/api/cameras/${rtspStreamManager.activeCameraId}/stream.mjpg`,
+                fps: activeStream ? activeStream.fps : 15
+              }));
+            } else if (room.broadcasters.size > 0) {
               ws.send(JSON.stringify({
                 type: 'status',
                 status: 'broadcaster-ready',
@@ -349,18 +479,14 @@ httpsServer.listen(PORT, '0.0.0.0', () => {
   const defaultCameraUrl = `https://${primaryIp}:${PORT}/camera.html?room=CAM-1`;
 
   console.log('\n=============================================================');
-  console.log('  🎥 CEOVA CCTV CAMERA & PHONE STREAMING SERVER STARTED');
+  console.log('  🎥 CEOVA VISION CCTV // AUTONOMOUS SURVEILLANCE ENGINE');
   console.log('=============================================================');
   console.log(`  🖥️  Desktop Web CCTV Hub:    ${localUrl}`);
+  console.log(`  📡  Camera Discovery Radar:  ${localUrl}/connect.html`);
   console.log(`  📶  LAN Network URL:         ${lanUrl}`);
-  console.log(`  📱  Direct Phone Stream:     ${defaultCameraUrl}`);
   console.log('=============================================================');
-  console.log('  📲 SCAN THIS QR CODE WITH YOUR PHONE CAMERA TO CONNECT:');
-  console.log('-------------------------------------------------------------');
-  qrcodeTerminal.generate(defaultCameraUrl, { small: true });
-  console.log('-------------------------------------------------------------');
-  console.log('  💡 NOTE: When opening on your phone for the first time,');
-  console.log('     tap "Advanced" -> "Proceed" to accept local HTTPS cert.');
+  console.log('  🔐 MODE: Autonomous CCTV Admin & Password Bot Discovery');
+  console.log('  ⚡ Network Sweeper & RTSP Stream Authenticator Active');
   console.log('=============================================================\n');
 });
 

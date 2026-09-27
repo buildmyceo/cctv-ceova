@@ -127,6 +127,7 @@
 
   // 2. Fetch Network Info & Generate Pairing QR Code
   async function setupNetworkAndQR() {
+    if (!networkIpSelect) return;
     try {
       const res = await fetch('/api/info');
       const info = await res.json();
@@ -159,24 +160,27 @@
       updatePairingUrl();
     } catch (e) {
       console.warn('Could not fetch /api/info, using current host', e);
-      const opt = document.createElement('option');
-      opt.value = window.location.origin;
-      opt.textContent = window.location.host;
-      networkIpSelect.appendChild(opt);
-      updatePairingUrl();
+      if (networkIpSelect) {
+        const opt = document.createElement('option');
+        opt.value = window.location.origin;
+        opt.textContent = window.location.host;
+        networkIpSelect.appendChild(opt);
+        updatePairingUrl();
+      }
     }
   }
 
   async function updatePairingUrl() {
+    if (!networkIpSelect || !pairingQrImg) return;
     const hostBase = networkIpSelect.value || window.location.origin;
     const cameraUrl = `${hostBase}/camera.html?room=${encodeURIComponent(activeRoomId)}`;
-    cameraUrlInput.value = cameraUrl;
-    btnOpenTab.href = cameraUrl;
+    if (cameraUrlInput) cameraUrlInput.value = cameraUrl;
+    if (btnOpenTab) btnOpenTab.href = cameraUrl;
 
     try {
       const qrRes = await fetch(`/api/qr?text=${encodeURIComponent(cameraUrl)}`);
       const qrData = await qrRes.json();
-      if (qrData.dataUrl) {
+      if (qrData.dataUrl && pairingQrImg) {
         pairingQrImg.src = qrData.dataUrl;
       }
     } catch (err) {
@@ -184,19 +188,232 @@
     }
   }
 
-  networkIpSelect.addEventListener('change', updatePairingUrl);
+  if (networkIpSelect) {
+    networkIpSelect.addEventListener('change', updatePairingUrl);
+  }
 
-  btnCopyLink.addEventListener('click', () => {
-    navigator.clipboard.writeText(cameraUrlInput.value).then(() => {
-      btnCopyLink.textContent = 'Copied!';
-      setTimeout(() => {
-        btnCopyLink.innerHTML = `
-          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
-          </svg> Copy`;
-      }, 2000);
+  if (btnCopyLink && cameraUrlInput) {
+    btnCopyLink.addEventListener('click', () => {
+      navigator.clipboard.writeText(cameraUrlInput.value).then(() => {
+        btnCopyLink.textContent = 'Copied!';
+        setTimeout(() => {
+          btnCopyLink.innerHTML = `
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+            </svg> Copy`;
+        }, 2000);
+      });
     });
-  });
+  }
+
+  // -------------------------------------------------------------
+  // CCTV Camera Login & Autonomous Discovery Handler
+  // -------------------------------------------------------------
+  const overlayCctvForm = document.getElementById('overlayCctvForm');
+  const overlayCctvUsername = document.getElementById('overlayCctvUsername');
+  const overlayCctvPassword = document.getElementById('overlayCctvPassword');
+  const overlayBotStatusText = document.getElementById('overlayBotStatusText');
+  const overlayBotPulse = document.getElementById('overlayBotPulse');
+  const btnOverlayConnect = document.getElementById('btnOverlayConnect');
+  const btnSimulateOverlay = document.getElementById('btnSimulateOverlay');
+
+  if (overlayCctvForm) {
+    overlayCctvForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = overlayCctvUsername?.value.trim() || 'admin';
+      const password = overlayCctvPassword?.value || '';
+      const targetIp = document.getElementById('overlayCctvIp')?.value.trim() || null;
+
+      if (btnOverlayConnect) {
+        btnOverlayConnect.disabled = true;
+        btnOverlayConnect.innerHTML = '<span class="pulse-dot"></span> Bot Scanning Network...';
+      }
+      if (overlayBotPulse) overlayBotPulse.style.background = '#38bdf8';
+      if (overlayBotStatusText) overlayBotStatusText.textContent = 'Bot Status: Sweeping local network & testing codes...';
+
+      try {
+        const res = await fetch('/api/cameras/discover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password, targetIp })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to start bot discovery');
+
+        // Listen to SSE progress
+        const evtSource = new EventSource('/api/cameras/discover/events');
+        evtSource.onmessage = async (evtMsg) => {
+          try {
+            const ev = JSON.parse(evtMsg.data);
+            if (ev.message && overlayBotStatusText) {
+              overlayBotStatusText.textContent = ev.message;
+            }
+            if (ev.type === 'CAMERA_MATCHED' && ev.camera) {
+              evtSource.close();
+              if (overlayBotPulse) overlayBotPulse.style.background = '#22c55e';
+              if (overlayBotStatusText) overlayBotStatusText.textContent = `✓ Connected: ${ev.camera.brand} (${ev.camera.ip})`;
+              
+              // Auto-register camera into active surveillance and launch RTSP stream
+              try {
+                const regRes = await fetch('/api/cameras/connect-matched', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({
+                    id: ev.camera.id,
+                    name: `${ev.camera.brand} (${ev.camera.ip})`,
+                    rtspUrl: ev.camera.rtspUrl,
+                    zoneName: 'SALES_FLOOR'
+                  })
+                });
+                const regData = await regRes.json();
+                const streamUrl = (regData && regData.streamUrl) || `/api/cameras/${ev.camera.id}/stream.mjpg`;
+
+                displayRtspStream(ev.camera.id, `${ev.camera.brand} (${ev.camera.ip})`, streamUrl);
+              } catch (regErr) {
+                console.error('Error registering matched camera:', regErr);
+                displayRtspStream(ev.camera.id, `${ev.camera.brand} (${ev.camera.ip})`);
+              }
+            } else if (ev.type === 'SCAN_COMPLETED') {
+              evtSource.close();
+              if (btnOverlayConnect) {
+                btnOverlayConnect.disabled = false;
+                btnOverlayConnect.innerHTML = '⚡ Auto-Detect & Connect Camera';
+              }
+              if (ev.matchedCount === 0 && overlayBotStatusText) {
+                if (ev.discoveredHosts && ev.discoveredHosts.length > 0) {
+                  const firstH = ev.discoveredHosts[0];
+                  overlayBotStatusText.innerHTML = `Found ${ev.discoveredHosts.length} camera(s) on LAN (<a href="/connect.html" style="color:#38bdf8;text-decoration:underline;">Click to connect ${firstH.ip}</a>)`;
+                  if (overlayBotPulse) overlayBotPulse.style.background = '#eab308';
+                } else {
+                  overlayBotStatusText.textContent = 'Scan finished: No cameras found with these credentials.';
+                  if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+                }
+              }
+            }
+          } catch (_err) {}
+        };
+      } catch (err) {
+        if (overlayBotStatusText) overlayBotStatusText.textContent = `Error: ${err.message}`;
+        if (btnOverlayConnect) {
+          btnOverlayConnect.disabled = false;
+          btnOverlayConnect.innerHTML = '⚡ Auto-Detect & Connect Camera';
+        }
+      }
+    });
+  }
+
+  // Live CCTV Synthetic Stream Generator (for demo / simulation mode)
+  let simStreamInterval = null;
+  function startSimulatedCctvStream() {
+    const simCanvas = document.createElement('canvas');
+    simCanvas.width = 1280;
+    simCanvas.height = 720;
+    const ctx = simCanvas.getContext('2d');
+    
+    let frame = 0;
+    const people = [
+      { x: 340, y: 380, vx: 1.6, vy: 0.15, color: '#38bdf8', label: 'STAFF #1' },
+      { x: 820, y: 410, vx: -1.3, vy: -0.1, color: '#f59e0b', label: 'CUSTOMER' },
+      { x: 580, y: 440, vx: 0.9, vy: 0.25, color: '#10b981', label: 'STAFF #2' }
+    ];
+
+    function drawCctvFrame() {
+      frame++;
+      // Background gradient
+      const grad = ctx.createLinearGradient(0, 0, 0, 720);
+      grad.addColorStop(0, '#0a0f1d');
+      grad.addColorStop(0.45, '#162032');
+      grad.addColorStop(1, '#060a12');
+      ctx.fillStyle = grad;
+      ctx.fillRect(0, 0, 1280, 720);
+
+      // Perspective floor lines
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
+      ctx.lineWidth = 1;
+      for (let x = 0; x <= 1280; x += 80) {
+        ctx.beginPath();
+        ctx.moveTo(x, 260);
+        ctx.lineTo((x - 640) * 2.5 + 640, 720);
+        ctx.stroke();
+      }
+      for (let y = 260; y <= 720; y += 45) {
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(1280, y);
+        ctx.stroke();
+      }
+
+      // Moving human silhouettes
+      people.forEach(p => {
+        p.x += p.vx;
+        p.y += p.vy;
+        if (p.x < 150 || p.x > 1120) p.vx *= -1;
+        if (p.y < 340 || p.y > 540) p.vy *= -1;
+
+        const bob = Math.sin(frame * 0.18) * 4;
+        ctx.fillStyle = 'rgba(226, 232, 240, 0.88)';
+        // Head
+        ctx.beginPath();
+        ctx.arc(p.x, p.y - 75 + bob, 18, 0, Math.PI * 2);
+        ctx.fill();
+        // Torso
+        ctx.beginPath();
+        ctx.ellipse(p.x, p.y - 20 + bob, 22, 42, 0, 0, Math.PI * 2);
+        ctx.fill();
+        // Legs
+        ctx.fillRect(p.x - 16, p.y + 22 + bob, 10, 48);
+        ctx.fillRect(p.x + 6, p.y + 22 + bob, 10, 48);
+
+        // Security tag
+        ctx.fillStyle = p.color;
+        ctx.font = 'bold 12px "JetBrains Mono", monospace';
+        ctx.fillText(`● ${p.label}`, p.x - 30, p.y - 105 + bob);
+      });
+
+      // CCTV Camera OSD Overlay
+      ctx.fillStyle = '#22c55e';
+      ctx.font = 'bold 16px "JetBrains Mono", monospace';
+      const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19);
+      ctx.fillText(`REC ● CAM-01 [SALES FLOOR]  ${nowStr}  25.0 FPS`, 30, 40);
+
+      ctx.fillStyle = 'rgba(255,255,255,0.45)';
+      ctx.font = '12px "JetBrains Mono", monospace';
+      ctx.fillText(`H.264 / 1080p / 4096kbps / RTSP HIKVISION OVER ONVIF`, 30, 62);
+
+      // Light scanline effect
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.015)';
+      for (let y = 0; y < 720; y += 4) {
+        ctx.fillRect(0, y, 1280, 1);
+      }
+    }
+
+    if (simCanvas.captureStream) {
+      const stream = simCanvas.captureStream(25);
+      remoteVideo.srcObject = stream;
+      remoteVideo.style.display = 'block';
+      remoteVideo.play().catch(() => {});
+      if (simStreamInterval) clearInterval(simStreamInterval);
+      simStreamInterval = setInterval(drawCctvFrame, 40);
+    }
+  }
+
+  // Simulation test mode button
+  if (btnSimulateOverlay) {
+    btnSimulateOverlay.addEventListener('click', async () => {
+      if (overlayBotStatusText) overlayBotStatusText.textContent = 'Simulating verified CCTV stream (Demo Mode)...';
+      if (overlayBotPulse) overlayBotPulse.style.background = '#38bdf8';
+      startSimulatedCctvStream();
+      setTimeout(() => {
+        if (overlayBotPulse) overlayBotPulse.style.background = '#22c55e';
+        if (overlayBotStatusText) overlayBotStatusText.textContent = '✓ Connected: Hikvision 1080p (Simulated)';
+        setTimeout(() => {
+          standbyOverlay.classList.add('hidden');
+          if (systemStatusText) systemStatusText.textContent = 'LIVE: Hikvision 1080p (Simulated)';
+          if (systemPulse) systemPulse.classList.add('active');
+        }, 800);
+      }, 1000);
+    });
+  }
 
   // 3. WebSocket & WebRTC Signaling
   function initWebSocket() {
@@ -349,8 +566,11 @@
 
       case 'status':
       case 'peer-joined': {
-        if (msg.role === 'broadcaster' || msg.status === 'broadcaster-ready') {
-          console.log('Phone camera joined the room.');
+        if (msg.source === 'rtsp' && msg.streamUrl) {
+          console.log(`[RTSP] Received active camera stream: ${msg.cameraId}`);
+          displayRtspStream(msg.cameraId, 'CCTV Camera', msg.streamUrl);
+        } else if (msg.role === 'broadcaster' || msg.status === 'broadcaster-ready') {
+          console.log('Camera joined the room.');
           // Don't recreate peer connection here; wait for broadcaster's offer
         }
         break;
@@ -505,10 +725,88 @@
       systemStatusText.textContent = 'ONLINE // LIVE FEED ACTIVE';
       osdStatus.textContent = 'ONLINE';
       osdStatus.style.color = 'var(--accent-green)';
-      addLogEvent('camera-connect', 'Phone Camera Connected', 'Live video stream initialized');
+      addLogEvent('camera-connect', 'CCTV Camera Connected', 'Live video stream initialized');
     }
     streamProtocolText.textContent = protocolName;
     startFpsMeter();
+  }
+
+  // Display Live RTSP Video Stream
+  function displayRtspStream(cameraId, cameraName = 'CCTV Camera', customStreamUrl = null) {
+    const streamUrl = customStreamUrl || `/api/cameras/${cameraId}/stream.mjpg`;
+    if (!fallbackImgFeed) return;
+
+    if (systemStatusText) systemStatusText.textContent = `CONNECTING: ${cameraName}...`;
+    if (systemPulse) systemPulse.className = 'pulse-dot active';
+
+    let firstFrameArrived = false;
+
+    fallbackImgFeed.onload = () => {
+      if (!firstFrameArrived) {
+        firstFrameArrived = true;
+        standbyOverlay.classList.add('hidden');
+        if (systemStatusText) systemStatusText.textContent = `LIVE: ${cameraName}`;
+        if (systemPulse) systemPulse.className = 'pulse-dot online';
+        if (streamProtocolText) streamProtocolText.textContent = 'RTSP MJPEG';
+        onStreamConnected('RTSP MJPEG');
+      }
+    };
+
+    fallbackImgFeed.onerror = () => {
+      console.warn(`[Viewer] Failed to load stream from ${streamUrl}`);
+      if (!firstFrameArrived) {
+        standbyOverlay.classList.remove('hidden');
+        if (overlayBotStatusText) {
+          overlayBotStatusText.textContent = `Stream connection failed for ${cameraName}. Check camera credentials & network.`;
+        }
+        if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+        if (systemStatusText) systemStatusText.textContent = `OFFLINE // ${cameraName}`;
+        if (systemPulse) systemPulse.className = 'pulse-dot';
+      }
+    };
+
+    // Direct the fallback image to the live MJPEG stream
+    fallbackImgFeed.src = streamUrl;
+    fallbackImgFeed.style.display = 'block';
+    remoteVideo.style.display = 'none';
+  }
+
+  // Auto-connect to active camera in database on page load
+  async function checkActiveCameraOnLoad() {
+    try {
+      const res = await fetch('/api/cameras');
+      const data = await res.json();
+      if (data && data.cameras && data.cameras.length > 0) {
+        const cam = data.cameras[0];
+        console.log('[Viewer] Camera found:', cam.name, cam.stream_url);
+
+        const isHttpProxy = cam.stream_url && (
+          cam.stream_url.startsWith('/api/proxy-stream') ||
+          cam.stream_url.startsWith('http://') ||
+          cam.stream_url.startsWith('https://')
+        );
+
+        if (isHttpProxy) {
+          // Direct HTTP/MJPEG stream — skip displayRtspStream to avoid onerror OFFLINE bug
+          if (fallbackImgFeed) {
+            fallbackImgFeed.onload = null;
+            fallbackImgFeed.onerror = null;
+            fallbackImgFeed.src = cam.stream_url;
+            fallbackImgFeed.style.display = 'block';
+          }
+          if (remoteVideo) remoteVideo.style.display = 'none';
+          if (standbyOverlay) standbyOverlay.classList.add('hidden');
+          if (systemStatusText) systemStatusText.textContent = 'LIVE // ' + cam.name;
+          if (systemPulse) systemPulse.className = 'pulse-dot online';
+          if (streamProtocolText) streamProtocolText.textContent = 'HTTP MJPEG';
+          if (osdStatus) { osdStatus.textContent = 'ONLINE'; osdStatus.style.color = 'var(--accent-green)'; }
+          isConnected = true;
+          startFpsMeter();
+        } else {
+          displayRtspStream(cam.id, cam.name, '/api/cameras/' + cam.id + '/stream.mjpg');
+        }
+      }
+    } catch (_e) { console.warn('[Viewer] checkActiveCameraOnLoad error:', _e); }
   }
 
   function onStreamDisconnected() {
@@ -546,6 +844,8 @@
 
       if (remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none') {
         resMeter.textContent = `${remoteVideo.videoWidth} x ${remoteVideo.videoHeight}`;
+      } else if (fallbackImgFeed && fallbackImgFeed.style.display !== 'none' && fallbackImgFeed.naturalWidth > 0) {
+        resMeter.textContent = `${fallbackImgFeed.naturalWidth} x ${fallbackImgFeed.naturalHeight}`;
       }
 
       if ('requestVideoFrameCallback' in remoteVideo && remoteVideo.style.display !== 'none') {
@@ -559,6 +859,8 @@
         if (remoteVideo.style.display !== 'none') {
           const fps = Math.round((vFrameCount * 1000) / (now - lastTime));
           fpsMeter.textContent = String(fps || 30);
+        } else if (fallbackImgFeed && fallbackImgFeed.style.display !== 'none') {
+          fpsMeter.textContent = fallbackImgFeed.naturalWidth > 0 ? '30' : '0';
         }
         vFrameCount = 0;
         lastTime = now;
@@ -847,32 +1149,48 @@
     return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
   }
 
-  // Advanced Multi-Human Sticky Tracker with Boundary Exit Awareness, Unique IDs & Live Dwell Timers
+  // Robust illumination-invariant normalized chromaticity & RGB color similarity
+  function getColorSimilarity(c1, c2) {
+    if (!c1 || !c2) return 0.50;
+    const sum1 = (c1[0] + c1[1] + c1[2]) || 1;
+    const sum2 = (c2[0] + c2[1] + c2[2]) || 1;
+
+    // 1. Normalized chromaticity (r, g, b ratios — robust against lighting and shadow changes)
+    const r1 = c1[0] / sum1, g1 = c1[1] / sum1, b1 = c1[2] / sum1;
+    const r2 = c2[0] / sum2, g2 = c2[1] / sum2, b2 = c2[2] / sum2;
+    const chromDist = Math.hypot(r1 - r2, g1 - g2, b1 - b2);
+    const chromSim = Math.max(0, 1.0 - (chromDist * 3.2));
+
+    // 2. Brightness-aware distance
+    const rgbDist = Math.hypot(c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2]);
+    const rgbSim = Math.max(0, 1.0 - (rgbDist / 200));
+
+    return (chromSim * 0.70) + (rgbSim * 0.30);
+  }
+
+  // Advanced Multi-Human Sticky Tracker with Boundary Exit Awareness, Unique IDs & 20s Memory System
   class AdvancedHumanTracker {
     constructor(options = {}) {
       this.tracks = []; // Array of active tracks
       this.nextId = (options && options.startId) || 1;
       this.totalUniqueCount = 0;
 
-      // Interior grace — how long a track stays alive while undetected (occluded / seated).
-      // 15 seconds: covers realistic occlusion events like walking behind another person,
-      // ducking under a desk, or momentarily leaving the camera edge.
-      // The OLD value of 6500ms was too short — people hidden behind others for >6.5s
-      // would lose their track and re-appear with a brand-new ID.
-      this.interiorGraceMs = (options && options.interiorGraceMs) || 15000;
+      // Disappearance grace period:
+      // When a human is undetected for 2500ms (~25 frames), they are marked as disappeared
+      // and moved to the 20-second dormant re-entry memory.
+      this.interiorGraceMs = 2500;
+      this.exitGraceMs = 1000;
 
-      // Border exit persistence: human at camera edge retires after 2.5s
-      this.exitGraceMs = (options && options.exitGraceMs) || 2500;
-
-      // Re-entry memory: remember departed tracks for 30 seconds.
-      // 30s gives enough buffer for someone who leaves the frame briefly and returns.
-      this.reentryMemoryMs = (options && options.reentryMemoryMs !== undefined) ? options.reentryMemoryMs : 30000;
+      // 20-Second Memory Window:
+      // Remembers disappeared humans for exactly 20,000ms (20 seconds).
+      // If the same human returns within 20s, they reclaim their exact same number!
+      this.reentryMemoryMs = 20000;
       this.dormantTracks = [];
     }
 
     update(detectedHumans, now = performance.now(), wallClockNow = Date.now(), frameW = 1280, frameH = 720) {
-      // Prune expired dormant tracks older than 20 seconds
-      this.dormantTracks = this.dormantTracks.filter(d => (now - d.departedTime) <= this.reentryMemoryMs);
+      // Prune dormant tracks older than 20 seconds
+      this.dormantTracks = this.dormantTracks.filter(d => (wallClockNow - (d.departedWallClock || 0)) <= this.reentryMemoryMs);
 
       function getIoU(b1, b2) {
         const x1 = Math.max(b1.x, b2.x);
@@ -918,38 +1236,42 @@
           const areaSim = Math.min(trArea, detArea) / Math.max(trArea, detArea);
 
           let affinity = 0;
-          if (iou > 0.08) {
+          if (iou > 0.05) {
             // Strong IoU overlap → high confidence same person
-            affinity = (iou * 2.2) + Math.max(0, 1.0 - normDist) * 0.7 + (areaSim * 0.3);
-          } else if (normDist < 0.90) {
-            // Proximity-only match — tightened from 1.4→0.90 to prevent cross-frame
-            // matches where one track claims a detection that's actually a different person.
-            affinity = Math.max(0, 1.0 - (normDist / 0.90)) + (areaSim * 0.25);
+            affinity = (iou * 2.2) + Math.max(0, 1.0 - normDist) * 0.8 + (areaSim * 0.3);
+          } else if (normDist < 1.6) {
+            // Proximity-only match — expanded to 1.6 to reliably track walking/moving humans
+            affinity = Math.max(0, 1.0 - (normDist / 1.6)) * 0.85 + (areaSim * 0.25);
+          }
+
+          // Single human lock: if only 1 active track and 1 detection in frame, lock on firmly!
+          if (this.tracks.length === 1 && detectedHumans.length === 1 && normDist < 2.0) {
+            affinity += 0.35;
           }
 
           // Established track lock bonus: lock on firmly to existing confirmed humans
-          if ((tr.totalDetections || 0) > 2) {
-            affinity += 0.15; // Reduced from 0.20 to keep fair competition between tracks
+          if ((tr.totalDetections || 0) > 1) {
+            affinity += 0.20;
           }
 
-          // Color consistency gating — strict rejection if clothing looks different
+          // Color consistency gating
           if (det.colorSignature && tr.colorSignature) {
             const cd = Math.hypot(
               det.colorSignature[0] - tr.colorSignature[0],
               det.colorSignature[1] - tr.colorSignature[1],
               det.colorSignature[2] - tr.colorSignature[2]
             );
-            if (cd > 55) {
-              // Hard reject: clearly different clothing color → different person
+            // Only hard reject if clothing is completely different AND boxes don't overlap
+            if (cd > 120 && iou < 0.10 && normDist > 0.80) {
               continue;
             } else {
-              const colorSim = Math.max(0, 1.0 - (cd / 110));
-              affinity += colorSim * 0.30;
+              const colorSim = Math.max(0, 1.0 - (cd / 140));
+              affinity += colorSim * 0.25;
             }
           }
 
-          // Raise minimum affinity gate from 0.28→0.35 to reduce false associations
-          if (affinity > 0.35) {
+          // Relaxed affinity gate from 0.35→0.25 to prevent dropping tracks during walking
+          if (affinity > 0.25) {
             candidates.push({ tIdx, dIdx, affinity });
           }
         }
@@ -992,9 +1314,10 @@
             t.direction = '';
           }
 
-          // Smooth exponential position & dimension interpolation (absorbs frame noise)
-          const posAlpha = 0.30;
-          const sizeAlpha = 0.22;
+          // Highly responsive position tracking: zero lag on movement
+          const moveDist = Math.hypot(hx - t.x, hy - t.y);
+          const posAlpha = moveDist > 16 ? 0.95 : (moveDist > 6 ? 0.88 : 0.65);
+          const sizeAlpha = 0.75;
           t.x = t.x * (1 - posAlpha) + hx * posAlpha;
           t.y = t.y * (1 - posAlpha) + hy * posAlpha;
           t.width = t.width * (1 - sizeAlpha) + hw * sizeAlpha;
@@ -1002,11 +1325,37 @@
 
           t.score = Math.max(t.score * 0.7, det.score);
           t.lastSeenTime = now;
+          t.lastSeenWallClock = wallClockNow;
           t.lastUpdateTime = now;
           t.misses = 0;
           t.totalDetections = (t.totalDetections || 0) + 1;
-          if (det.colorSignature) {
-            t.colorSignature = det.colorSignature;
+
+          // Continuous appearance refinement: accumulate multi-zone color & Re-ID prototypes
+          if (det.colorSignature) t.colorSignature = det.colorSignature;
+          if (det.colorProfile) {
+            t.colorProfile = det.colorProfile;
+            if (det.colorProfile.torso) t.colorSignature = det.colorProfile.torso;
+            if (det.colorProfile.lower) t.lowerColor = det.colorProfile.lower;
+            if (det.colorProfile.upper) t.upperColor = det.colorProfile.upper;
+          }
+          if (det.reidFeatures) {
+            t.reidFeatures = det.reidFeatures;
+            if (!t.embeddingBank) t.embeddingBank = [];
+            if (t.embeddingBank.length < 8) {
+              t.embeddingBank.push(det.reidFeatures);
+            } else if (det.score > 0.60) {
+              t.embeddingBank.shift();
+              t.embeddingBank.push(det.reidFeatures);
+            }
+          }
+          if (t.colorSignature) {
+            if (!t.colorBank) t.colorBank = [];
+            if (t.colorBank.length < 8) {
+              t.colorBank.push(t.colorSignature);
+            } else {
+              t.colorBank.shift();
+              t.colorBank.push(t.colorSignature);
+            }
           }
         }
       }
@@ -1053,101 +1402,139 @@
           let bestDormantIdx = -1;
           let bestDormantScore = 0;
 
+          // ── Search 20-Second Memory for returning human ───────────────────
           for (let k = 0; k < this.dormantTracks.length; k++) {
             const d = this.dormantTracks[k];
-            const timeAwaySec = (now - d.departedTime) / 1000;
-            if (timeAwaySec > (this.reentryMemoryMs / 1000)) continue;
+            const timeAwaySec = (wallClockNow - (d.departedWallClock || 0)) / 1000;
+            // Internal window: strictly within 20 seconds (+2s network grace to never drop an on-time return)
+            if (timeAwaySec > 22.0) continue;
 
-            // ── Clothing color gating ─────────────────────────────────────────────
-            // If we have color signatures for both, use them. If color is very
-            // different (cd > 55) this is a different person — hard reject.
-            // If no color signature is available at all, don't penalise — rely on
-            // position + size instead (happens in low-light / first detection).
-            let colorSim = 0.5; // neutral default when no color data
-            let hasColorData = false;
-            if (det.colorSignature && d.colorSignature) {
-              const cd = Math.hypot(
-                det.colorSignature[0] - d.colorSignature[0],
-                det.colorSignature[1] - d.colorSignature[1],
-                det.colorSignature[2] - d.colorSignature[2]
-              );
-              if (cd > 55) continue; // Hard reject: clearly different person
-              colorSim = Math.max(0, 1.0 - (cd / 110));
-              hasColorData = true;
+            let score = 0;
+            let weights = 0;
+
+            // 1. 128-Dim Deep Re-ID Appearance Cosine Similarity across all stored prototype embeddings
+            const dEmbeddings = (d.embeddingBank && d.embeddingBank.length > 0)
+              ? d.embeddingBank
+              : (d.reidFeatures ? [d.reidFeatures] : []);
+
+            if (det.reidFeatures && dEmbeddings.length > 0) {
+              let maxEmbSim = 0;
+              for (const emb of dEmbeddings) {
+                if (emb && emb.length === det.reidFeatures.length) {
+                  let dot = 0;
+                  for (let n = 0; n < det.reidFeatures.length; n++) {
+                    dot += det.reidFeatures[n] * emb[n];
+                  }
+                  maxEmbSim = Math.max(maxEmbSim, Math.max(0, Math.min(1.0, dot)));
+                }
+              }
+              score += maxEmbSim * 0.45;
+              weights += 0.45;
             }
 
-            // ── Size and aspect ratio similarity ──────────────────────────────────
-            const dormArea = d.width * d.height;
-            const dormAspect = d.width / Math.max(1, d.height);
-            const areaSim = Math.min(detArea, dormArea) / Math.max(detArea, dormArea || 1);
-            const aspectSim = Math.min(detAspect, dormAspect) / Math.max(detAspect, dormAspect || 1);
+            // 2. Torso / Shirt Color Similarity (Illumination-Invariant Chromaticity)
+            const detTorso = det.colorSignature || (det.colorProfile && det.colorProfile.torso);
+            const dTorsoSamples = (d.colorBank && d.colorBank.length > 0)
+              ? d.colorBank
+              : (d.colorSignature ? [d.colorSignature] : (d.colorProfile?.torso ? [d.colorProfile.torso] : []));
 
-            // ── Position proximity ───────────────────────────────────────────────
-            // Use velocity-projected position: where would the track be NOW if it
-            // kept moving at its last known velocity? This handles someone who was
-            // occluded while walking — they reappear a few frames ahead.
-            const projDt = Math.min(timeAwaySec, 1.5); // cap projection to 1.5s
-            const projCx = (d.x + d.width / 2) + (d.vx || 0) * projDt;
-            const projCy = (d.y + d.height / 2) + (d.vy || 0) * projDt;
-            const dist = Math.hypot(detCx - projCx, detCy - projCy);
-
-            // Normalise distance against average person width (not frame diagonal)
-            // so the proximity score is meaningful regardless of camera FOV.
-            const personRef = Math.max(d.width, d.height, 60);
-            const normDist = dist / personRef;
-            // posProximity = 1.0 when centres overlap, 0.0 when >2 person-widths apart
-            const posProximity = Math.max(0, 1.0 - normDist / 2.0);
-
-            const recencyFactor = Math.max(0, 1.0 - (timeAwaySec / (this.reentryMemoryMs / 1000)));
-
-            // ── Composite re-entry score ──────────────────────────────────────────
-            // Weights: color (if available) > position > size > recency
-            let score;
-            if (hasColorData) {
-              score = (colorSim * 0.40) + (posProximity * 0.30) + (areaSim * 0.15) + (aspectSim * 0.10) + (recencyFactor * 0.05);
-            } else {
-              // No clothing data: lean more on position + size
-              score = (posProximity * 0.50) + (areaSim * 0.25) + (aspectSim * 0.15) + (recencyFactor * 0.10);
+            if (detTorso && dTorsoSamples.length > 0) {
+              let maxTorsoSim = 0;
+              for (const col of dTorsoSamples) {
+                maxTorsoSim = Math.max(maxTorsoSim, getColorSimilarity(detTorso, col));
+              }
+              score += maxTorsoSim * 0.35;
+              weights += 0.35;
             }
 
-            // Threshold lowered 0.48 → 0.30 so occluded persons reappearing near
-            // their last known position always reclaim their ID.
-            if (score > bestDormantScore && score >= 0.30) {
-              bestDormantScore = score;
+            // 3. Lower Body / Pants Color Similarity
+            const detLower = det.lowerColor || (det.colorProfile && det.colorProfile.lower);
+            const dLower = d.lowerColor || (d.colorProfile && d.colorProfile.lower);
+            if (detLower && dLower) {
+              const lowerSim = getColorSimilarity(detLower, dLower);
+              score += lowerSim * 0.20;
+              weights += 0.20;
+            }
+
+            // 4. Upper Body / Hair / Collar Similarity
+            const detUpper = det.upperColor || (det.colorProfile && det.colorProfile.upper);
+            const dUpper = d.upperColor || (d.colorProfile && d.colorProfile.upper);
+            if (detUpper && dUpper) {
+              const upperSim = getColorSimilarity(detUpper, dUpper);
+              score += upperSim * 0.15;
+              weights += 0.15;
+            }
+
+            // 5. Aspect Ratio & Silhouette Similarity
+            const detAspect = hw / Math.max(1, hh);
+            const dAspect = d.width / Math.max(1, d.height);
+            const aspectSim = Math.min(detAspect, dAspect) / Math.max(detAspect, dAspect || 1);
+            score += aspectSim * 0.10;
+            weights += 0.10;
+
+            // 6. Recency Affinity Factor: humans returning within 20s have high probability
+            const recencyFactor = Math.max(0, 1.0 - (timeAwaySec / 22.0)) * 0.15;
+            score += recencyFactor;
+            weights += 0.10;
+
+            const finalSim = weights > 0 ? (score / weights) : 0.50;
+
+            // Buffed matching threshold:
+            // Single candidate in 20s memory: match immediately if similarity >= 0.20!
+            // Multiple candidates in memory: match best candidate if similarity >= 0.28!
+            const matchThreshold = this.dormantTracks.length === 1 ? 0.20 : 0.28;
+            if (finalSim > bestDormantScore && finalSim >= matchThreshold) {
+              bestDormantScore = finalSim;
               bestDormantIdx = k;
             }
           }
 
           if (bestDormantIdx >= 0) {
-            // Re-activate past human number!
-            const resurrected = this.dormantTracks.splice(bestDormantIdx, 1)[0];
-            resurrected.x = hx;
-            resurrected.y = hy;
-            resurrected.width = hw;
-            resurrected.height = hh;
-            resurrected.score = det.score;
-            resurrected.vx = 0;
-            resurrected.vy = 0;
-            resurrected.motionState = 'STEADY';
-            resurrected.direction = '';
-            resurrected.misses = 0;
-            resurrected.lastSeenTime = now;
-            resurrected.lastUpdateTime = now;
-            resurrected.lastSeenWallClock = wallClockNow;
-            resurrected.totalDetections = (resurrected.totalDetections || 0) + 1;
-            // Seamless dwell timer continuation from accumulated past dwell time
-            resurrected.firstSeenWallClock = wallClockNow - (resurrected.accumulatedDwellMs || 0);
+            // Re-activate same human number within 20 seconds!
+            const d = this.dormantTracks.splice(bestDormantIdx, 1)[0];
+            const timeAwaySec = Math.round((wallClockNow - (d.departedWallClock || wallClockNow)) / 1000);
 
-            if (det.colorSignature) {
-              resurrected.colorSignature = det.colorSignature;
-            }
+            const resurrected = {
+              ...d,
+              id: d.id, // EXACT SAME HUMAN NUMBER!
+              x: hx,
+              y: hy,
+              width: hw,
+              height: hh,
+              score: det.score,
+              vx: 0,
+              vy: 0,
+              motionState: 'STEADY',
+              direction: '',
+              misses: 0,
+              lastSeenTime: now,
+              lastSeenWallClock: wallClockNow,
+              lastUpdateTime: now,
+              totalDetections: (d.totalDetections || 1) + 1,
+              reentered: true,
+              reenteredTime: wallClockNow,
+              visitCount: (d.visitCount || 1) + 1,
+              accumulatedDwellMs: (d.accumulatedDwellMs || 0) + (d.dwellMs || 0),
+              firstSeenWallClock: wallClockNow - (d.accumulatedDwellMs || 0),
+              entityClass: 'person',
+              embeddingBank: d.embeddingBank || (d.reidFeatures ? [d.reidFeatures] : []),
+              colorBank: d.colorBank || (d.colorSignature ? [d.colorSignature] : [])
+            };
+
+            if (det.colorSignature) resurrected.colorSignature = det.colorSignature;
+            if (det.colorProfile) resurrected.colorProfile = det.colorProfile;
+            if (det.reidFeatures) resurrected.reidFeatures = det.reidFeatures;
+            if (det.lowerColor) resurrected.lowerColor = det.lowerColor;
 
             this.tracks.push(resurrected);
             matchedDetIndices.add(dIdx);
+
+            console.log(`[MemorySystem] 🔄 Human #${d.id} returned after ${timeAwaySec}s (within 20s window) -> RECLAIMED SAME ID #${d.id} (Match: ${Math.round(bestDormantScore * 100)}%)`);
+            addLogEvent('human', `🔄 Human #${d.id} returned (${timeAwaySec}s away)`, `Re-identified within 20s window • Retained ID #${d.id} (Visit #${resurrected.visitCount}, Match: ${Math.round(bestDormantScore * 100)}%)`);
             continue;
           }
 
-          // Not in 20-second memory: assign brand new Human ID
+          // Not in 20-second memory: assign brand new Human ID number
           const newId = this.nextId++;
           this.totalUniqueCount++;
 
@@ -1164,11 +1551,21 @@
             score: det.score,
             firstSeenWallClock: wallClockNow,
             lastSeenTime: now,
+            lastSeenWallClock: wallClockNow,
             lastUpdateTime: now,
             misses: 0,
             totalDetections: 1,
-            colorSignature: det.colorSignature || null,
-            accumulatedDwellMs: 0
+            colorSignature: det.colorSignature || (det.colorProfile && det.colorProfile.torso) || null,
+            colorProfile: det.colorProfile || null,
+            lowerColor: det.lowerColor || (det.colorProfile && det.colorProfile.lower) || null,
+            upperColor: det.upperColor || (det.colorProfile && det.colorProfile.upper) || null,
+            reidFeatures: det.reidFeatures || null,
+            embeddingBank: det.reidFeatures ? [det.reidFeatures] : [],
+            colorBank: det.colorSignature ? [det.colorSignature] : [],
+            accumulatedDwellMs: 0,
+            visitCount: 1,
+            reentered: false,
+            entityClass: 'person'
           };
           this.tracks.push(newTrack);
         }
@@ -1219,24 +1616,21 @@
           t.misses++;
         }
 
-        const elapsedSinceSeen = now - t.lastSeenTime;
-
-        // Check if track is at the camera boundary (exiting range)
+        const elapsedSinceSeen = wallClockNow - (t.lastSeenWallClock || wallClockNow);
         const isAtBoundary = (
           t.x <= borderMarginX ||
           t.y <= borderMarginY ||
           (t.x + t.width) >= (frameW - borderMarginX) ||
           (t.y + t.height) >= (frameH - borderMarginY)
         );
-
-        // Generous interior grace (6.5s) keeps counter ticking steady; boundary exit retires after 1.5s
         const allowedGrace = isAtBoundary ? this.exitGraceMs : this.interiorGraceMs;
 
         if (elapsedSinceSeen > allowedGrace) {
-          // Human departed or out of camera range -> Save to 20s Re-Entry Memory!
+          // Human departed / disappeared from camera view -> Save to 20s Re-Entry Memory!
           t.departedTime = now;
-          t.departedWallClock = wallClockNow;
-          t.accumulatedDwellMs = (t.accumulatedDwellMs || 0) + (wallClockNow - t.firstSeenWallClock);
+          t.departedWallClock = t.lastSeenWallClock || wallClockNow;
+          t.dwellMs = (t.lastSeenWallClock || wallClockNow) - t.firstSeenWallClock;
+          t.accumulatedDwellMs = (t.accumulatedDwellMs || 0) + t.dwellMs;
           t.exitBbox = { x: t.x, y: t.y, w: t.width, h: t.height };
           t.isAtBoundary = isAtBoundary;
           
@@ -1244,14 +1638,17 @@
           this.dormantTracks = this.dormantTracks.filter(d => d.id !== t.id);
           this.dormantTracks.push(t);
 
+          console.log(`[MemorySystem] 👤 Human #${t.id} disappeared from view. Armed 20s memory.`);
+          addLogEvent('human', `👤 Human #${t.id} left camera`, `Disappeared at ${new Date(wallClockNow).toLocaleTimeString()} • 20s Re-Entry Memory active`);
+
           this.tracks.splice(i, 1);
           continue;
         }
 
-        // Forward project walking track if temporarily occluded
-        if (!isMatched && t.motionState === 'WALKING' && t.misses < 12) {
-          t.x += t.vx * 0.03;
-          t.y += t.vy * 0.03;
+        // Forward project walking track if temporarily occluded or missed
+        if (!isMatched && t.misses < 10) {
+          t.x += t.vx * 0.035;
+          t.y += t.vy * 0.035;
         }
 
         // Live continuous dwell timer
@@ -1269,14 +1666,16 @@
     }
 
     getLiveTracks(wallClockNow = Date.now()) {
-      return this.tracks.map(t => {
-        const dwellMs = wallClockNow - t.firstSeenWallClock;
-        return {
-          ...t,
-          dwellMs,
-          dwellFormatted: formatDwellTime(dwellMs)
-        };
-      });
+      return this.tracks
+        .filter(t => (t.misses || 0) <= 12) // Keep box active & stable for up to 12 missed cycles (~1.2s) without blinking!
+        .map(t => {
+          const dwellMs = wallClockNow - t.firstSeenWallClock;
+          return {
+            ...t,
+            dwellMs,
+            dwellFormatted: formatDwellTime(dwellMs)
+          };
+        });
     }
 
     clear() {
@@ -1309,23 +1708,22 @@
     // slider > 38% to raise the floor above 0.38 and miss real people.
     // Now: model always runs at 0.38. The slider only affects track retention
     // downstream (how long an unmatched track survives before being retired).
-    const scanScoreFloor = 0.38;
+    const scanScoreFloor = 0.40;
 
     const scaleX = sW / (aiW || sW || 1);
     const scaleY = sH / (aiH || sH || 1);
     const canvasIsReady = (c) => c && c.width > 0 && c.height > 0;
 
-    // ─── Geometry validator — reject detections that cannot be a full person ───
-    // A real standing/seated person bbox must be:
-    //   • Height >= 7% of frame (min ~50px on 720p) — filters tiny fragments
-    //   • Height >= Width (portrait orientation) — a person is taller than wide
-    //   • Area >= 0.4% of frame — filters hairline slivers
-    const minHeightFrac = 0.07;   // 7% of source frame height
+    // ─── Human Entity & Geometry validator (STRICTLY HUMANS ONLY) ───
+    const minHeightFrac = 0.05;   // At least 5% of source frame height
     const frameArea = sW * sH;
-    function isValidPersonBox(bx, by, bw, bh) {
-      if (bh < sH * minHeightFrac) return false;        // Too short
-      if (bw > bh * 2.2) return false;                  // Way wider than tall (not a person)
-      if ((bw * bh) < frameArea * 0.004) return false;  // Too tiny overall
+    function isValidEntityBox(bx, by, bw, bh, cls) {
+      // STRICT: Reject any entity that is not a person/human
+      if (cls !== 'person' && cls !== 'human') return false;
+      if (bw < 14 || bh < 24) return false;        // Too tiny
+      if ((bw * bh) < frameArea * 0.002) return false;  // Hairline sliver / noise
+      if (bw > bh * 1.8) return false; // Aberrant horizontal bar (desks, sofas, tables)
+      if (bh > bw * 8.5) return false; // Aberrant vertical sliver (poles, wires)
       return true;
     }
 
@@ -1334,25 +1732,37 @@
     if (canvasIsReady(aiBufferCanvas)) {
       let yoloSucceeded = false;
 
-      // 1. High-Precision YOLOv8 + OpenCV Microservice Scan
+      // 1. High-Precision YOLOv8 + OpenCV Microservice Scan (STRICTLY HUMANS ONLY)
       if (aiEngineMode === 'yolo') {
         try {
-          const frameJpeg = aiBufferCanvas.toDataURL('image/jpeg', 0.80);
+          const frameJpeg = aiBufferCanvas.toDataURL('image/jpeg', 0.68);
           const yoloRes = await fetch('/api/vision/yolo/detect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image: frameJpeg, conf: scanScoreFloor, iou: 0.45 })
+            body: JSON.stringify({ image: frameJpeg, conf: scanScoreFloor, iou: 0.45, classes: [0] })
           });
           if (yoloRes.ok) {
             const data = await yoloRes.json();
             if (data.success && Array.isArray(data.detections)) {
               data.detections.forEach(det => {
+                const entityCls = (det.class || 'person').toLowerCase();
+                // STRICT: Humans only
+                if (entityCls !== 'person' && entityCls !== 'human') return;
+
                 const bx = det.bbox[0] * scaleX;
                 const by = det.bbox[1] * scaleY;
                 const bw = det.bbox[2] * scaleX;
                 const bh = det.bbox[3] * scaleY;
-                if (isValidPersonBox(bx, by, bw, bh)) {
-                  raw.push({ bbox: [bx, by, bw, bh], aiBbox: det.bbox, score: det.score, source: 'yolov8' });
+                if (isValidEntityBox(bx, by, bw, bh, entityCls)) {
+                  raw.push({
+                    bbox: [bx, by, bw, bh],
+                    aiBbox: det.bbox,
+                    score: det.score,
+                    source: 'yolov8',
+                    entityClass: 'person',
+                    reidFeatures: det.reid_features || null,
+                    colorSignature: det.color_signature || null
+                  });
                 }
               });
               yoloSucceeded = true;
@@ -1363,16 +1773,25 @@
         }
       }
 
-      // 2. Browser MobileNetV2 Scan (used if selected or as automatic fallback)
+      // 2. Browser MobileNetV2 Scan (STRICTLY HUMANS ONLY)
       if (!yoloSucceeded && humanModel) {
         try {
           const preds = await humanModel.detect(aiBufferCanvas, 20, scanScoreFloor);
           (preds || []).forEach(p => {
-            if (p.class.toLowerCase() !== 'person') return;
+            const entityCls = (p.class || '').toLowerCase();
+            // STRICT: Reject chairs, remotes, phones, dogs, cats, cups, etc.
+            if (entityCls !== 'person' && entityCls !== 'human') return;
+
             const bx = p.bbox[0] * scaleX, by = p.bbox[1] * scaleY;
             const bw = p.bbox[2] * scaleX, bh = p.bbox[3] * scaleY;
-            if (isValidPersonBox(bx, by, bw, bh)) {
-              raw.push({ bbox: [bx, by, bw, bh], aiBbox: p.bbox, score: p.score, source: 'mobilenet' });
+            if (isValidEntityBox(bx, by, bw, bh, entityCls)) {
+              raw.push({
+                bbox: [bx, by, bw, bh],
+                aiBbox: p.bbox,
+                score: p.score,
+                source: 'mobilenet',
+                entityClass: 'person'
+              });
             }
           });
         } catch (_e) { return []; }
@@ -1442,29 +1861,43 @@
     return results;
   }
 
-  // Fast torso color extractor to maintain identity consistency across exits/re-entries
-  function extractTorsoColor(ctx, bbox, frameW, frameH) {
-    if (!ctx || !bbox) return null;
+  // Multi-zone body color extractor (upper, torso, lower) for invariant re-entry recognition
+  function extractBodyColorProfile(ctx, bbox, frameW, frameH) {
+    if (!ctx || !bbox) return { torso: null, upper: null, lower: null };
     const [x, y, w, h] = bbox;
-    const sx = Math.round(Math.max(0, Math.min(frameW - 2, x + w * 0.25)));
-    const sy = Math.round(Math.max(0, Math.min(frameH - 2, y + h * 0.25)));
-    const sw = Math.max(2, Math.min(frameW - sx, Math.round(w * 0.50)));
-    const sh = Math.max(2, Math.min(frameH - sy, Math.round(h * 0.35)));
-    try {
-      const imgData = ctx.getImageData(sx, sy, sw, sh);
-      const data = imgData.data;
-      let r = 0, g = 0, b = 0, cnt = 0;
-      const step = Math.max(1, Math.floor((sw * sh) / 100)); // Sample ~100 points maximum for blazing speed
-      for (let i = 0; i < data.length; i += step * 4) {
-        r += data[i];
-        g += data[i + 1];
-        b += data[i + 2];
-        cnt++;
+
+    function getAverageRGB(y1Frac, y2Frac, x1Frac, x2Frac) {
+      const sx = Math.round(Math.max(0, Math.min(frameW - 2, x + w * x1Frac)));
+      const sy = Math.round(Math.max(0, Math.min(frameH - 2, y + h * y1Frac)));
+      const sw = Math.max(2, Math.min(frameW - sx, Math.round(w * (x2Frac - x1Frac))));
+      const sh = Math.max(2, Math.min(frameH - sy, Math.round(h * (y2Frac - y1Frac))));
+      try {
+        const imgData = ctx.getImageData(sx, sy, sw, sh);
+        const data = imgData.data;
+        let r = 0, g = 0, b = 0, cnt = 0;
+        const step = Math.max(1, Math.floor((sw * sh) / 60));
+        for (let i = 0; i < data.length; i += step * 4) {
+          r += data[i];
+          g += data[i + 1];
+          b += data[i + 2];
+          cnt++;
+        }
+        return cnt > 0 ? [Math.round(r / cnt), Math.round(g / cnt), Math.round(b / cnt)] : null;
+      } catch (e) {
+        return null;
       }
-      return cnt > 0 ? [Math.round(r / cnt), Math.round(g / cnt), Math.round(b / cnt)] : null;
-    } catch (e) {
-      return null;
     }
+
+    const upper = getAverageRGB(0.05, 0.25, 0.20, 0.80);
+    const torso = getAverageRGB(0.25, 0.65, 0.15, 0.85);
+    const lower = getAverageRGB(0.65, 0.95, 0.15, 0.85);
+
+    return { torso, upper, lower };
+  }
+
+  function extractTorsoColor(ctx, bbox, frameW, frameH) {
+    const prof = extractBodyColorProfile(ctx, bbox, frameW, frameH);
+    return prof.torso;
   }
 
   // Coordinate mapping for letterboxed object-fit: contain video
@@ -1524,10 +1957,17 @@
   // Draw futuristic neon bounding box with Role State, Global ID, Dwell Timer, and Motion State
   function drawHumanTargetBox(ctx, x, y, width, height, human) {
     const role = human.roleType || 'UNKNOWN';
+    const entityType = (human.entityClass || human.class || 'person').toUpperCase();
     let themeColor = '#00ff88'; // Default neon green
     let tintColor = 'rgba(0, 255, 136, 0.08)';
 
-    if (role === 'STAFF') {
+    if (human.reentered) {
+      themeColor = '#00ff88'; // Bright Neon Green for 20s Memory Re-entry
+      tintColor = 'rgba(0, 255, 136, 0.15)';
+    } else if (entityType !== 'PERSON') {
+      themeColor = '#38bdf8'; // Electric Cyan for other detected entities (phone, laptop, bottle, etc.)
+      tintColor = 'rgba(56, 189, 248, 0.12)';
+    } else if (role === 'STAFF') {
       themeColor = '#00ff88'; // Green for Verified Staff
       tintColor = 'rgba(0, 255, 136, 0.12)';
     } else if (role === 'CUSTOMER') {
@@ -1543,8 +1983,8 @@
       themeColor = '#f87171'; // Red for Security
       tintColor = 'rgba(248, 113, 113, 0.12)';
     } else {
-      themeColor = '#facc15'; // Amber/Yellow for UNKNOWN
-      tintColor = 'rgba(250, 204, 21, 0.09)';
+      themeColor = '#00ff88'; // Neon green for Person
+      tintColor = 'rgba(0, 255, 136, 0.08)';
     }
 
     if (human.isRecognized) {
@@ -1594,15 +2034,21 @@
     ctx.moveTo(cx, cy - reticleSize); ctx.lineTo(cx, cy + reticleSize);
     ctx.stroke();
 
-    // 5. Header HUD Pill Badges (Role / Staff Identity + Live Dwell Timer)
+    // 5. Header HUD Pill Badges (Entity Class / Role Identity + Live Dwell Timer)
+    const isHuman = entityType === 'PERSON';
     const confPercent = Math.round((human.matchScore || human.roleConfidence || human.score) * 100);
-    const roleLabel = human.assignedRole || 'UNKNOWN';
-    const localIdStr = `HUMAN #${human.id}`;
-    const gid = human.globalTrackId ? `${human.globalTrackId} (${localIdStr})` : localIdStr;
-    const namePrefix = human.personName ? `[${human.personName}] ` : '';
-    const visitSuffix = (human.visitCount && human.visitCount > 1) ? ` // V#${human.visitCount}` : '';
-    const idText = `${namePrefix}${gid} // ${roleLabel} [${confPercent}%]${visitSuffix}`;
-    const timerText = `⏱️ ${human.dwellFormatted}`;
+    
+    // Prominently display "HUMAN #1" and if re-entered within 20s: "HUMAN #1 // RE-ENTERED (V#2)"
+    let idText;
+    if (isHuman) {
+      const visitSuffix = (human.visitCount && human.visitCount > 1) ? ` // V#${human.visitCount}` : '';
+      const reenterSuffix = human.reentered ? ' // RE-ENTERED' : '';
+      const namePrefix = human.personName ? `[${human.personName}] ` : '';
+      idText = `${namePrefix}HUMAN #${human.id}${reenterSuffix}${visitSuffix} [${confPercent}%]`;
+    } else {
+      idText = `${entityType} #${human.id} [${confPercent}%]`;
+    }
+    const timerText = `⏱️ ${human.dwellFormatted || '00:00'}`;
 
     ctx.font = 'bold 11px "Courier New", monospace';
     const idWidth = ctx.measureText(idText).width + 18;
@@ -1610,7 +2056,7 @@
     const badgeHeight = 22;
     const badgeY = Math.max(0, y - badgeHeight - 3);
 
-    // Badge 1: Role, Staff Identity & Confidence Pill
+    // Badge 1: Role, Entity Identity & Confidence Pill
     ctx.shadowBlur = 0;
     ctx.fillStyle = 'rgba(10, 14, 20, 0.94)';
     ctx.fillRect(x, badgeY, idWidth, badgeHeight);
@@ -1644,8 +2090,8 @@
     const motionStr = human.motionState === 'WALKING'
       ? `WALKING ${human.direction}`
       : 'STEADY';
-    const recTag = human.isRecognized ? 'RE-ID MATCHED // ' : '';
-    const subText = `${recTag}[#${human.id}] ${motionStr} // [${Math.round(x)},${Math.round(y)}]`;
+    const recTag = human.reentered ? '20s MEMORY: RE-ENTERED // ' : (human.isRecognized ? 'RE-ID MATCHED // ' : '');
+    const subText = `${recTag}[${isHuman ? 'HUMAN' : entityType} #${human.id}] ${motionStr} // [${Math.round(x)},${Math.round(y)}]`;
 
     ctx.font = '9px "Courier New", monospace';
     ctx.fillStyle = themeColor;
@@ -1756,11 +2202,12 @@
   function renderHumanHUDLoop() {
     if (!humanBotActive) return;
 
-    // Sync motionCanvas dimensions with monitorWrapper
-    const rect = monitorWrapper.getBoundingClientRect();
-    if (motionCanvas.width !== Math.round(rect.width) || motionCanvas.height !== Math.round(rect.height)) {
-      motionCanvas.width = Math.round(rect.width);
-      motionCanvas.height = Math.round(rect.height);
+    // Fast dimension sync without forced reflow
+    const mw = monitorWrapper.clientWidth;
+    const mh = monitorWrapper.clientHeight;
+    if (mw > 0 && mh > 0 && (motionCanvas.width !== mw || motionCanvas.height !== mh)) {
+      motionCanvas.width = mw;
+      motionCanvas.height = mh;
     }
 
     const isVideoMode = remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none';
@@ -1789,10 +2236,31 @@
 
       // Render glowing green target boxes with unique numbers and continuous live dwell timers
       liveTracks.forEach((human) => {
-        const bx = transform.offsetX + (human.x * transform.scaleX);
-        const by = transform.offsetY + (human.y * transform.scaleY);
-        const bw = human.width * transform.scaleX;
-        const bh = human.height * transform.scaleY;
+        // Predictive motion compensation & snappy 60 FPS tracking
+        const dtSec = Math.min(0.20, Math.max(0, (wallClockNow - (human.lastSeenWallClock || wallClockNow)) / 1000));
+        // Project position forward along velocity vector so the box stays glued to the moving person
+        const targetX = human.x + (human.vx || 0) * dtSec;
+        const targetY = human.y + (human.vy || 0) * dtSec;
+        const targetW = human.width;
+        const targetH = human.height;
+
+        if (human.renderX === undefined || isNaN(human.renderX) || Math.hypot(targetX - human.renderX, targetY - human.renderY) > 60) {
+          human.renderX = targetX;
+          human.renderY = targetY;
+          human.renderW = targetW;
+          human.renderH = targetH;
+        } else {
+          // Snappy 0.20 / 0.80 interpolation: 80% towards target each frame -> reaches 96% in 2 frames (33ms) with zero jitter!
+          human.renderX = human.renderX * 0.20 + targetX * 0.80;
+          human.renderY = human.renderY * 0.20 + targetY * 0.80;
+          human.renderW = human.renderW * 0.25 + targetW * 0.75;
+          human.renderH = human.renderH * 0.25 + targetH * 0.75;
+        }
+
+        const bx = transform.offsetX + (human.renderX * transform.scaleX);
+        const by = transform.offsetY + (human.renderY * transform.scaleY);
+        const bw = human.renderW * transform.scaleX;
+        const bh = human.renderH * transform.scaleY;
 
         drawHumanTargetBox(ctx, bx, by, bw, bh, human);
       });
@@ -1807,7 +2275,7 @@
   async function triggerNextInference() {
     if (!humanBotActive) return;
 
-    if (isInferring || !humanModel) {
+    if (isInferring || (aiEngineMode !== 'yolo' && !humanModel)) {
       inferenceTimeoutId = setTimeout(triggerNextInference, 40);
       return;
     }
@@ -1815,7 +2283,7 @@
     const isVideoMode = remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none';
     const sourceEl = isVideoMode ? remoteVideo : fallbackImgFeed;
 
-    if (!sourceEl || (isVideoMode && remoteVideo.readyState < 2) || (!isVideoMode && (!fallbackImgFeed?.complete || !fallbackImgFeed?.naturalWidth))) {
+    if (!sourceEl || (isVideoMode && remoteVideo.readyState < 2) || (!isVideoMode && !fallbackImgFeed?.naturalWidth)) {
       inferenceTimeoutId = setTimeout(triggerNextInference, 50);
       return;
     }
@@ -1829,8 +2297,8 @@
       const sH = isVideoMode ? remoteVideo.videoHeight : fallbackImgFeed.naturalHeight;
 
       if (sW > 0 && sH > 0) {
-        // High-speed downscaled AI resolution (Capped at 640px to eliminate WebGL transfer lag)
-        const maxAiDim = 640;
+        // High-speed downscaled AI resolution (Capped at 480px for instant inference and zero lag)
+        const maxAiDim = 480;
         let aiW = sW;
         let aiH = sH;
         if (sW > maxAiDim || sH > maxAiDim) {
@@ -1852,11 +2320,21 @@
         // Execute multi-scale scan for both close & distant humans
         const instantHumans = await scanHumansMultiScale(aiW, aiH, sW, sH, humanDetectionConfidence);
 
-        // Attach lightweight torso color signatures for re-entry recognition
+        // Attach multi-zone body color signatures for 20s re-entry recognition
         if (instantHumans && instantHumans.length > 0) {
           instantHumans.forEach(h => {
             const aiBox = h.aiBbox || [h.bbox[0] * (aiW / sW), h.bbox[1] * (aiH / sH), h.bbox[2] * (aiW / sW), h.bbox[3] * (aiH / sH)];
-            h.colorSignature = extractTorsoColor(aiBufferCtx, aiBox, aiW, aiH);
+            const colorProf = extractBodyColorProfile(aiBufferCtx, aiBox, aiW, aiH);
+            h.colorProfile = colorProf;
+            if (!h.colorSignature && colorProf.torso) {
+              h.colorSignature = colorProf.torso;
+            }
+            if (colorProf.lower) {
+              h.lowerColor = colorProf.lower;
+            }
+            if (colorProf.upper) {
+              h.upperColor = colorProf.upper;
+            }
           });
         }
 
@@ -1871,7 +2349,7 @@
     } finally {
       isInferring = false;
       if (humanBotActive) {
-        inferenceTimeoutId = setTimeout(triggerNextInference, 35);
+        inferenceTimeoutId = setTimeout(triggerNextInference, 12);
       }
     }
   }
@@ -1956,6 +2434,13 @@
       }
     });
   }
+
+  // Globally accessible helper to start AI Detection Bot
+  window.startAiBot = async function() {
+    if (!humanBotActive && btnHumanBotToggle) {
+      btnHumanBotToggle.click();
+    }
+  };
 
   // AI Detection Engine Mode Switcher (YOLOv8 vs MobileNetV2)
   function updateAiEngineUI() {
@@ -2192,16 +2677,18 @@
   remoteVideo.addEventListener('loadedmetadata', handleVideoDimensionUpdate);
   remoteVideo.addEventListener('resize', handleVideoDimensionUpdate);
 
-  fallbackImgFeed.addEventListener('load', () => {
-    if (remoteVideo.style.display === 'none' || !remoteVideo.srcObject) {
-      if (currentAspectMode === 'auto') {
-        const streamRatio = fallbackImgFeed.naturalHeight > fallbackImgFeed.naturalWidth ? '9:16' : '16:9';
-        if (lastAutoDetectedAspect !== streamRatio) {
-          applyAspectMode('auto', false);
+  if (fallbackImgFeed) {
+    fallbackImgFeed.addEventListener('load', () => {
+      if (remoteVideo.style.display === 'none' || !remoteVideo.srcObject) {
+        if (currentAspectMode === 'auto') {
+          const streamRatio = fallbackImgFeed.naturalHeight > fallbackImgFeed.naturalWidth ? '9:16' : '16:9';
+          if (lastAutoDetectedAspect !== streamRatio) {
+            applyAspectMode('auto', false);
+          }
         }
       }
-    }
-  });
+    });
+  }
 
   window.addEventListener('resize', () => {
     syncCanvasDimensions();
@@ -2981,6 +3468,1307 @@
     memoryFilterRole.addEventListener('change', () => loadKnownGallery());
   }
 
+  // =========================================================
+  // PEOPLE COUNT RESPECT TO TIME (REAL-TIME TIMELINE GRAPH)
+  // =========================================================
+  const peopleCanvas = document.getElementById('peopleOccupancyCanvas');
+  const graphWrapper = document.getElementById('graphCanvasWrapper');
+  const graphTooltip = document.getElementById('graphTooltip');
+  const miniSparkline = document.getElementById('miniPeopleSparkline');
+  const miniSparklinePeak = document.getElementById('miniSparklinePeak');
+
+  const gMetricCurrent = document.getElementById('gMetricCurrent');
+  const gMetricCurrentSub = document.getElementById('gMetricCurrentSub');
+  const gMetricPeak = document.getElementById('gMetricPeak');
+  const gMetricPeakTime = document.getElementById('gMetricPeakTime');
+  const gMetricAvg = document.getElementById('gMetricAvg');
+  const gMetricTotal = document.getElementById('gMetricTotal');
+  const graphOccupancyDensity = document.getElementById('graphOccupancyDensity');
+  const graphDataPointCount = document.getElementById('graphDataPointCount');
+
+  const graphLiveStatus = document.getElementById('graphLiveStatus');
+  const graphLiveStatusText = document.getElementById('graphLiveStatusText');
+  const graphPulseDot = document.getElementById('graphPulseDot');
+
+  const chkSeriesTotal = document.getElementById('chkSeriesTotal');
+  const chkSeriesStaff = document.getElementById('chkSeriesStaff');
+  const chkSeriesVisitors = document.getElementById('chkSeriesVisitors');
+
+  const btnToggleSimulate = document.getElementById('btnToggleSimulate');
+  const btnPauseGraph = document.getElementById('btnPauseGraph');
+  const btnExportCsv = document.getElementById('btnExportCsv');
+  const btnExportGraphPng = document.getElementById('btnExportGraphPng');
+  const btnClearGraph = document.getElementById('btnClearGraph');
+
+  const TIMELINE_STORAGE_KEY = 'ceova_people_timeline_v2';
+  let peopleTimeline = [];
+  try {
+    const saved = localStorage.getItem(TIMELINE_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        const twoHoursAgo = Date.now() - 2 * 3600 * 1000;
+        peopleTimeline = parsed.filter(p => p && p.timestamp > twoHoursAgo);
+      }
+    }
+  } catch (_) {}
+
+  // Populate baseline 30s so the graph starts with a clean baseline
+  if (peopleTimeline.length === 0) {
+    const baseNow = Date.now();
+    for (let i = 30; i >= 0; i--) {
+      peopleTimeline.push({
+        timestamp: baseNow - (i * 1000),
+        totalCount: 0,
+        staffCount: 0,
+        visitorCount: 0,
+        cumulativeCount: 0
+      });
+    }
+  }
+
+  let selectedRange = 60; // 60, 300, 900, 3600, or 'all'
+  let isGraphPaused = false;
+  let pauseFreezeTime = null;
+  let isSimulating = false;
+  let simCycleStep = 0;
+  let simCounts = { total: 0, staff: 0, visitors: 0 };
+  let hoverState = null; // { mouseX, mouseY }
+
+  // Simulate Traffic Wave Generator
+  const simWaves = [
+    { total: 0, staff: 0, visitors: 0 },
+    { total: 1, staff: 1, visitors: 0 },
+    { total: 1, staff: 1, visitors: 0 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 3, staff: 1, visitors: 2 },
+    { total: 4, staff: 1, visitors: 3 }, // Peak surge
+    { total: 5, staff: 2, visitors: 3 }, // Maximum peak
+    { total: 4, staff: 2, visitors: 2 },
+    { total: 3, staff: 1, visitors: 2 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 1, staff: 0, visitors: 1 },
+    { total: 0, staff: 0, visitors: 0 },
+    { total: 0, staff: 0, visitors: 0 }
+  ];
+
+  function tickSimulation() {
+    if (!isSimulating) return;
+    simCycleStep = (simCycleStep + 1) % simWaves.length;
+    simCounts = { ...simWaves[simCycleStep] };
+  }
+
+  // 1-Second Sampling Engine
+  function samplePeopleTimeData() {
+    const now = Date.now();
+    let total = 0;
+    let staff = 0;
+    let visitors = 0;
+    let cumulative = humanTracker ? humanTracker.totalUniqueCount : 0;
+
+    if (isSimulating) {
+      total = simCounts.total;
+      staff = simCounts.staff;
+      visitors = simCounts.visitors;
+      cumulative = Math.max(cumulative, 6);
+    } else if (humanTracker) {
+      const liveTracks = humanTracker.getLiveTracks(now);
+      total = liveTracks.length;
+      for (const t of liveTracks) {
+        if (t.assignedRole === 'STAFF') staff++;
+        else visitors++;
+      }
+      cumulative = humanTracker.totalUniqueCount;
+    }
+
+    const sample = {
+      timestamp: now,
+      totalCount: total,
+      staffCount: staff,
+      visitorCount: visitors,
+      cumulativeCount: cumulative
+    };
+
+    peopleTimeline.push(sample);
+
+    // Keep max 7200 points (2 hours of 1-sec data)
+    if (peopleTimeline.length > 7200) {
+      peopleTimeline.shift();
+    }
+
+    // Debounced persist to localStorage
+    if (peopleTimeline.length % 5 === 0) {
+      try {
+        localStorage.setItem(TIMELINE_STORAGE_KEY, JSON.stringify(peopleTimeline.slice(-600)));
+      } catch (_) {}
+    }
+
+    // Sync with backend API
+    if (peopleTimeline.length % 3 === 0) {
+      fetch('/api/people/timeline/sample', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sample)
+      }).catch(() => {});
+    }
+
+    // Sync with Popular Times hourly aggregator (every 5 samples)
+    if (peopleTimeline.length % 5 === 0 && typeof recordLivePopularSample === 'function') {
+      recordLivePopularSample(total);
+    }
+
+    updateMetricsDisplay();
+  }
+
+  // Calculate & Update Metrics
+  function updateMetricsDisplay() {
+    if (peopleTimeline.length === 0) return;
+    const now = isGraphPaused && pauseFreezeTime ? pauseFreezeTime : Date.now();
+
+    // Determine current window points
+    let windowStart;
+    if (selectedRange === 'all') {
+      windowStart = peopleTimeline[0].timestamp;
+    } else {
+      windowStart = now - (selectedRange * 1000);
+    }
+
+    const windowPoints = peopleTimeline.filter(p => p.timestamp >= windowStart && p.timestamp <= now);
+    const pts = windowPoints.length > 0 ? windowPoints : peopleTimeline.slice(-30);
+
+    const latest = peopleTimeline[peopleTimeline.length - 1];
+    const current = latest ? latest.totalCount : 0;
+
+    let peak = 0;
+    let peakPt = null;
+    let sum = 0;
+
+    for (const p of pts) {
+      if (p.totalCount >= peak) {
+        peak = p.totalCount;
+        peakPt = p;
+      }
+      sum += p.totalCount;
+    }
+
+    const avg = pts.length > 0 ? (sum / pts.length).toFixed(1) : '0.0';
+    const totalUnique = humanTracker ? humanTracker.totalUniqueCount : (latest ? latest.cumulativeCount : 0);
+
+    if (gMetricCurrent) gMetricCurrent.textContent = String(current);
+    if (gMetricCurrentSub) {
+      gMetricCurrentSub.textContent = isSimulating ? 'simulated traffic' : (current === 1 ? '1 person in frame' : `${current} people in frame`);
+    }
+    if (gMetricPeak) gMetricPeak.textContent = String(peak);
+    if (gMetricPeakTime) {
+      gMetricPeakTime.textContent = peakPt ? new Date(peakPt.timestamp).toLocaleTimeString() : '--:--:--';
+    }
+    if (gMetricAvg) gMetricAvg.textContent = String(avg);
+    if (gMetricTotal) gMetricTotal.textContent = String(Math.max(totalUnique, peak));
+
+    if (graphDataPointCount) {
+      graphDataPointCount.textContent = `${peopleTimeline.length} points recorded (1s sample rate)`;
+    }
+
+    // Occupancy Density Badge
+    if (graphOccupancyDensity) {
+      graphOccupancyDensity.className = 'density-pill';
+      if (current === 0) {
+        graphOccupancyDensity.classList.add('density-vacant');
+        graphOccupancyDensity.textContent = 'STATUS: VACANT (0 PEOPLE)';
+      } else if (current <= 2) {
+        graphOccupancyDensity.classList.add('density-normal');
+        graphOccupancyDensity.textContent = `STATUS: NORMAL OCCUPANCY (${current} IN VIEW)`;
+      } else if (current <= 4) {
+        graphOccupancyDensity.classList.add('density-busy');
+        graphOccupancyDensity.textContent = `STATUS: MODERATE TRAFFIC (${current} IN VIEW)`;
+      } else {
+        graphOccupancyDensity.classList.add('density-surge');
+        graphOccupancyDensity.textContent = `STATUS: HIGH DENSITY SURGE (${current} IN VIEW)`;
+      }
+    }
+  }
+
+  // Draw Spline / Smooth Line Curve
+  function drawSmoothSeries(ctx, coords, strokeColor, fillColor = null, lineWidth = 2) {
+    if (!coords || coords.length === 0) return;
+
+    if (coords.length === 1) {
+      ctx.beginPath();
+      ctx.arc(coords[0].x, coords[0].y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = strokeColor;
+      ctx.fill();
+      return;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(coords[0].x, coords[0].y);
+
+    for (let i = 0; i < coords.length - 1; i++) {
+      const p0 = coords[i === 0 ? i : i - 1];
+      const p1 = coords[i];
+      const p2 = coords[i + 1];
+      const p3 = coords[i + 2 < coords.length ? i + 2 : i + 1];
+
+      // Catmull-Rom to Cubic Bezier control points conversion
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+    }
+
+    if (fillColor) {
+      ctx.save();
+      const fillPath = new Path2D();
+      fillPath.moveTo(coords[0].x, coords[0].y);
+
+      for (let i = 0; i < coords.length - 1; i++) {
+        const p0 = coords[i === 0 ? i : i - 1];
+        const p1 = coords[i];
+        const p2 = coords[i + 1];
+        const p3 = coords[i + 2 < coords.length ? i + 2 : i + 1];
+
+        const cp1x = p1.x + (p2.x - p0.x) / 6;
+        const cp1y = p1.y + (p2.y - p0.y) / 6;
+        const cp2x = p2.x - (p3.x - p1.x) / 6;
+        const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+        fillPath.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+      }
+
+      // Close path to bottom of chart
+      const bottomY = coords[coords.length - 1].bottomY;
+      fillPath.lineTo(coords[coords.length - 1].x, bottomY);
+      fillPath.lineTo(coords[0].x, bottomY);
+      fillPath.closePath();
+
+      ctx.fillStyle = fillColor;
+      ctx.fill(fillPath);
+      ctx.restore();
+    }
+
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = strokeColor;
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Main Canvas Rendering Function
+  function renderPeopleGraph() {
+    if (!peopleCanvas || !graphWrapper) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = graphWrapper.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+
+    if (w <= 0 || h <= 0) return;
+
+    if (peopleCanvas.width !== Math.round(w * dpr) || peopleCanvas.height !== Math.round(h * dpr)) {
+      peopleCanvas.width = Math.round(w * dpr);
+      peopleCanvas.height = Math.round(h * dpr);
+    }
+
+    const ctx = peopleCanvas.getContext('2d');
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = { top: 25, right: 65, bottom: 35, left: 45 };
+    const pw = w - pad.left - pad.right;
+    const ph = h - pad.top - pad.bottom;
+
+    if (pw <= 0 || ph <= 0) {
+      ctx.restore();
+      return;
+    }
+
+    const now = isGraphPaused && pauseFreezeTime ? pauseFreezeTime : Date.now();
+    let leftTime;
+    if (selectedRange === 'all') {
+      leftTime = peopleTimeline.length > 0 ? peopleTimeline[0].timestamp : (now - 60000);
+      if (now - leftTime < 60000) leftTime = now - 60000;
+    } else {
+      leftTime = now - (selectedRange * 1000);
+    }
+    const rightTime = now;
+    const timeSpan = Math.max(10000, rightTime - leftTime);
+
+    // Filter points in visible window
+    const pts = peopleTimeline.filter(p => p.timestamp >= (leftTime - 2000) && p.timestamp <= (rightTime + 2000));
+
+    // Calculate maximum Y
+    let maxVal = 0;
+    let peakVal = 0;
+    let peakPt = null;
+    let sum = 0;
+
+    for (const p of pts) {
+      if (p.totalCount > maxVal) maxVal = p.totalCount;
+      if (p.totalCount > peakVal) {
+        peakVal = p.totalCount;
+        peakPt = p;
+      }
+      sum += p.totalCount;
+    }
+
+    const avgVal = pts.length > 0 ? sum / pts.length : 0;
+    const yMax = Math.max(5, Math.ceil(maxVal * 1.2));
+
+    const getX = t => pad.left + ((t - leftTime) / timeSpan) * pw;
+    const getY = v => pad.top + ph - (v / yMax) * ph;
+
+    // 1. Grid Background & Axes
+    ctx.lineWidth = 1;
+    ctx.font = '10px JetBrains Mono, monospace';
+
+    // Horizontal grid lines
+    const yStep = yMax <= 6 ? 1 : (yMax <= 12 ? 2 : Math.ceil(yMax / 6));
+    for (let y = 0; y <= yMax; y += yStep) {
+      const py = Math.round(getY(y)) + 0.5;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = y === 0 ? 'rgba(255, 255, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)';
+      if (y !== 0) ctx.setLineDash([3, 4]);
+      ctx.moveTo(pad.left, py);
+      ctx.lineTo(pad.left + pw, py);
+      ctx.stroke();
+      ctx.restore();
+
+      // Y Label
+      ctx.fillStyle = y === 0 ? '#d4d4d8' : '#71717a';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(y), pad.left - 10, py);
+    }
+
+    // Y Axis unit title
+    ctx.save();
+    ctx.fillStyle = '#71717a';
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('PEOPLE', pad.left - 36, pad.top - 12);
+    ctx.restore();
+
+    // Vertical time grid lines
+    const numTicks = w > 600 ? 6 : 4;
+    for (let i = 0; i <= numTicks; i++) {
+      const tickTime = leftTime + (i / numTicks) * timeSpan;
+      const px = Math.round(getX(tickTime)) + 0.5;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.setLineDash([2, 4]);
+      ctx.moveTo(px, pad.top);
+      ctx.lineTo(px, pad.top + ph);
+      ctx.stroke();
+      ctx.restore();
+
+      // Time label
+      const d = new Date(tickTime);
+      const timeStr = d.toTimeString().split(' ')[0];
+      ctx.fillStyle = '#71717a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(timeStr, px, pad.top + ph + 8);
+    }
+
+    // 2. Reference Lines (Peak & Average)
+    if (peakVal > 0) {
+      const py = getY(peakVal);
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.moveTo(pad.left, py);
+      ctx.lineTo(pad.left + pw, py);
+      ctx.stroke();
+
+      // Peak Badge on right margin
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.18)';
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.5)';
+      ctx.beginPath();
+      ctx.roundRect(pad.left + pw + 4, py - 9, 56, 18, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`PEAK: ${peakVal}`, pad.left + pw + 32, py);
+      ctx.restore();
+    }
+
+    if (avgVal > 0 && Math.abs(getY(avgVal) - getY(peakVal)) > 14) {
+      const ay = getY(avgVal);
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1;
+      ctx.moveTo(pad.left, ay);
+      ctx.lineTo(pad.left + pw, ay);
+      ctx.stroke();
+
+      // Avg Badge on right margin
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.15)';
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.beginPath();
+      ctx.roundRect(pad.left + pw + 4, ay - 9, 56, 18, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`AVG: ${avgVal.toFixed(1)}`, pad.left + pw + 32, ay);
+      ctx.restore();
+    }
+
+    // 3. Prepare Series Coordinate Lists
+    const totalCoords = [];
+    const staffCoords = [];
+    const visitorCoords = [];
+
+    const bottomY = pad.top + ph;
+
+    for (const p of pts) {
+      const px = getX(p.timestamp);
+      totalCoords.push({ x: px, y: getY(p.totalCount), bottomY, raw: p });
+      staffCoords.push({ x: px, y: getY(p.staffCount), bottomY, raw: p });
+      visitorCoords.push({ x: px, y: getY(p.visitorCount), bottomY, raw: p });
+    }
+
+    // Clip rendering strictly to plot area
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pad.left - 2, pad.top - 5, pw + 4, ph + 10);
+    ctx.clip();
+
+    // Series 1: Total People (with gradient fill)
+    if (chkSeriesTotal && chkSeriesTotal.checked && totalCoords.length > 0) {
+      const totalGrad = ctx.createLinearGradient(0, pad.top, 0, pad.top + ph);
+      totalGrad.addColorStop(0, 'rgba(56, 189, 248, 0.28)');
+      totalGrad.addColorStop(0.7, 'rgba(56, 189, 248, 0.05)');
+      totalGrad.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+
+      drawSmoothSeries(ctx, totalCoords, '#38bdf8', totalGrad, 2.5);
+
+      // Pulse Radar indicator at rightmost point
+      const lastCoord = totalCoords[totalCoords.length - 1];
+      if (lastCoord) {
+        const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(lastCoord.x, lastCoord.y, 4 + pulse * 6, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(56, 189, 248, ${0.45 - pulse * 0.35})`;
+        ctx.fill();
+
+        ctx.beginPath();
+        ctx.arc(lastCoord.x, lastCoord.y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = '#38bdf8';
+        ctx.shadowBlur = 8;
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Series 2: Enrolled Staff (Green)
+    if (chkSeriesStaff && chkSeriesStaff.checked && staffCoords.length > 0) {
+      drawSmoothSeries(ctx, staffCoords, '#22c55e', null, 1.8);
+    }
+
+    // Series 3: Unknown / Visitors (Purple)
+    if (chkSeriesVisitors && chkSeriesVisitors.checked && visitorCoords.length > 0) {
+      drawSmoothSeries(ctx, visitorCoords, '#a855f7', null, 1.8);
+    }
+
+    // 4. Interactive Hover Crosshair & Dots
+    if (hoverState && hoverState.mouseX >= pad.left && hoverState.mouseX <= (pad.left + pw)) {
+      const hx = hoverState.mouseX;
+
+      // Vertical scanner crosshair line
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.moveTo(hx, pad.top);
+      ctx.lineTo(hx, pad.top + ph);
+      ctx.stroke();
+
+      // Find closest point
+      let closestPt = null;
+      let minDistance = Infinity;
+
+      for (const c of totalCoords) {
+        const d = Math.abs(c.x - hx);
+        if (d < minDistance) {
+          minDistance = d;
+          closestPt = c;
+        }
+      }
+
+      if (closestPt && minDistance < 40) {
+        // Draw glow circles on curves
+        if (chkSeriesTotal && chkSeriesTotal.checked) {
+          ctx.beginPath();
+          ctx.arc(closestPt.x, closestPt.y, 5, 0, Math.PI * 2);
+          ctx.fillStyle = '#38bdf8';
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([]);
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        // Update HTML Tooltip
+        if (graphTooltip) {
+          const raw = closestPt.raw;
+          const timeStr = new Date(raw.timestamp).toLocaleTimeString();
+          let statusText = 'Vacant';
+          if (raw.totalCount >= 5) statusText = 'Crowd Surge';
+          else if (raw.totalCount >= 3) statusText = 'Moderate Occupancy';
+          else if (raw.totalCount >= 1) statusText = 'Normal Occupancy';
+
+          graphTooltip.innerHTML = `
+            <div class="graph-tooltip-time">🕒 ${timeStr}</div>
+            <div class="graph-tooltip-row">
+              <span style="color:var(--accent-sky);">👥 Total People:</span>
+              <strong>${raw.totalCount}</strong>
+            </div>
+            <div class="graph-tooltip-row">
+              <span style="color:var(--accent-grass);">👔 Staff:</span>
+              <strong>${raw.staffCount}</strong>
+            </div>
+            <div class="graph-tooltip-row">
+              <span style="color:#a855f7;">🚶 Visitors:</span>
+              <strong>${raw.visitorCount}</strong>
+            </div>
+            <div class="graph-tooltip-row" style="margin-top:4px; font-size:0.68rem; color:var(--text-muted); border-top:1px dashed rgba(255,255,255,0.1); padding-top:2px;">
+              <span>Status:</span>
+              <span style="color:#fff;">${statusText}</span>
+            </div>
+          `;
+
+          // Clamp tooltip position inside canvas wrapper
+          const ttX = Math.max(70, Math.min(w - 70, closestPt.x));
+          const ttY = Math.max(50, closestPt.y - 15);
+          graphTooltip.style.left = `${ttX}px`;
+          graphTooltip.style.top = `${ttY}px`;
+          graphTooltip.classList.remove('hidden');
+        }
+      } else {
+        if (graphTooltip) graphTooltip.classList.add('hidden');
+      }
+      ctx.restore();
+    } else {
+      if (graphTooltip) graphTooltip.classList.add('hidden');
+    }
+
+    ctx.restore(); // Undo clip
+    ctx.restore(); // Undo setTransform
+
+    // 5. Draw Mini Sparkline in Side Panel
+    renderMiniSparkline(pts, peakVal);
+  }
+
+  // Draw Side-Panel Mini Sparkline
+  function renderMiniSparkline(pts, peakVal) {
+    if (!miniSparkline) return;
+    const sW = miniSparkline.width;
+    const sH = miniSparkline.height;
+    const sCtx = miniSparkline.getContext('2d');
+    sCtx.clearRect(0, 0, sW, sH);
+
+    if (miniSparklinePeak) {
+      miniSparklinePeak.textContent = `PEAK: ${peakVal}`;
+    }
+
+    if (!pts || pts.length === 0) return;
+
+    const last60 = pts.slice(-45);
+    let sMax = Math.max(3, ...last60.map(p => p.totalCount));
+
+    const coords = [];
+    for (let i = 0; i < last60.length; i++) {
+      const x = (i / (last60.length - 1 || 1)) * sW;
+      const y = sH - 4 - (last60[i].totalCount / sMax) * (sH - 8);
+      coords.push({ x, y, bottomY: sH });
+    }
+
+    const grad = sCtx.createLinearGradient(0, 0, 0, sH);
+    grad.addColorStop(0, 'rgba(34, 197, 94, 0.4)');
+    grad.addColorStop(1, 'rgba(34, 197, 94, 0.0)');
+
+    drawSmoothSeries(sCtx, coords, '#22c55e', grad, 1.8);
+  }
+
+  // Animation Loop (60 FPS smooth rendering)
+  let lastSampleCheck = 0;
+  function graphAnimationLoop() {
+    const now = Date.now();
+
+    // 1-second regular sampler
+    if (now - lastSampleCheck >= 1000) {
+      lastSampleCheck = now;
+      if (isSimulating) tickSimulation();
+      samplePeopleTimeData();
+    }
+
+    renderPeopleGraph();
+    requestAnimationFrame(graphAnimationLoop);
+  }
+
+  // UI Event Listeners for Controls
+  function setupGraphControls() {
+    // Time Range buttons
+    const rangeBtns = document.querySelectorAll('.time-range-btn');
+    rangeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        rangeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const r = btn.dataset.range;
+        selectedRange = r === 'all' ? 'all' : parseInt(r, 10);
+        updateMetricsDisplay();
+      });
+    });
+
+    // Pause / Resume Toggle
+    if (btnPauseGraph) {
+      btnPauseGraph.addEventListener('click', () => {
+        isGraphPaused = !isGraphPaused;
+        if (isGraphPaused) {
+          pauseFreezeTime = Date.now();
+          btnPauseGraph.textContent = '▶ Resume';
+          btnPauseGraph.classList.add('btn-primary');
+          btnPauseGraph.classList.remove('btn-secondary');
+          if (graphLiveStatus) {
+            graphLiveStatus.classList.add('paused');
+            graphLiveStatusText.textContent = 'PAUSED';
+            graphPulseDot.className = 'pulse-dot';
+          }
+        } else {
+          pauseFreezeTime = null;
+          btnPauseGraph.textContent = '⏸ Pause';
+          btnPauseGraph.classList.remove('btn-primary');
+          btnPauseGraph.classList.add('btn-secondary');
+          if (graphLiveStatus) {
+            graphLiveStatus.classList.remove('paused');
+            graphLiveStatusText.textContent = 'LIVE TRACKING';
+            graphPulseDot.className = 'pulse-dot online';
+          }
+        }
+      });
+    }
+
+    // Simulate Traffic Wave Toggle
+    if (btnToggleSimulate) {
+      btnToggleSimulate.addEventListener('click', () => {
+        isSimulating = !isSimulating;
+        if (isSimulating) {
+          simCycleStep = 0;
+          btnToggleSimulate.textContent = '⚡ Stop Sim';
+          btnToggleSimulate.classList.add('btn-primary');
+          btnToggleSimulate.classList.remove('btn-secondary');
+        } else {
+          btnToggleSimulate.textContent = '⚡ Simulate Traffic';
+          btnToggleSimulate.classList.remove('btn-primary');
+          btnToggleSimulate.classList.add('btn-secondary');
+          simCounts = { total: 0, staff: 0, visitors: 0 };
+        }
+      });
+    }
+
+    // Export CSV
+    if (btnExportCsv) {
+      btnExportCsv.addEventListener('click', () => {
+        if (peopleTimeline.length === 0) {
+          alert('No timeline data to export yet.');
+          return;
+        }
+
+        let csv = 'Timestamp_MS,DateTime_ISO,Time_Local,Total_People,Staff_Count,Visitor_Count\n';
+        for (const pt of peopleTimeline) {
+          const d = new Date(pt.timestamp);
+          csv += `${pt.timestamp},${d.toISOString()},"${d.toLocaleTimeString()}",${pt.totalCount},${pt.staffCount},${pt.visitorCount}\n`;
+        }
+
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ceova_people_occupancy_timeline_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Export Snapshot PNG
+    if (btnExportGraphPng && peopleCanvas) {
+      btnExportGraphPng.addEventListener('click', () => {
+        try {
+          const snapCanvas = document.createElement('canvas');
+          snapCanvas.width = 1200;
+          snapCanvas.height = 630;
+          const sCtx = snapCanvas.getContext('2d');
+
+          // Dark cyber background
+          sCtx.fillStyle = '#08080c';
+          sCtx.fillRect(0, 0, 1200, 630);
+
+          // Top Header Banner
+          sCtx.fillStyle = '#38bdf8';
+          sCtx.font = 'bold 22px Plus Jakarta Sans, sans-serif';
+          sCtx.fillText('CEOVA VISION CCTV // PEOPLE OCCUPANCY OVER TIME', 40, 48);
+
+          sCtx.fillStyle = '#8e8e93';
+          sCtx.font = '14px JetBrains Mono, monospace';
+          sCtx.fillText(`Report Generated: ${new Date().toLocaleString()} | CCTV CAM-01`, 40, 76);
+
+          // Summary Stats Pill Bar
+          sCtx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+          sCtx.fillRect(40, 96, 1120, 60);
+
+          sCtx.fillStyle = '#22c55e';
+          sCtx.font = 'bold 15px JetBrains Mono, monospace';
+          sCtx.fillText(`CURRENT: ${gMetricCurrent?.textContent || 0}`, 60, 132);
+
+          sCtx.fillStyle = '#f59e0b';
+          sCtx.fillText(`PEAK: ${gMetricPeak?.textContent || 0} (${gMetricPeakTime?.textContent || '--'})`, 280, 132);
+
+          sCtx.fillStyle = '#38bdf8';
+          sCtx.fillText(`AVG OCCUPANCY: ${gMetricAvg?.textContent || 0} / min`, 580, 132);
+
+          sCtx.fillStyle = '#c084fc';
+          sCtx.fillText(`TOTAL UNIQUE IDs: ${gMetricTotal?.textContent || 0}`, 880, 132);
+
+          // Draw main chart into snapshot
+          sCtx.drawImage(peopleCanvas, 40, 175, 1120, 410);
+
+          const dataUrl = snapCanvas.toDataURL('image/png');
+          const a = document.createElement('a');
+          a.href = dataUrl;
+          a.download = `ceova_people_graph_${Date.now()}.png`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } catch (e) {
+          alert('Snapshot failed: ' + e.message);
+        }
+      });
+    }
+
+    // Reset Timeline
+    if (btnClearGraph) {
+      btnClearGraph.addEventListener('click', () => {
+        if (confirm('Clear all recorded people timeline data?')) {
+          peopleTimeline = [];
+          const baseNow = Date.now();
+          for (let i = 20; i >= 0; i--) {
+            peopleTimeline.push({
+              timestamp: baseNow - (i * 1000),
+              totalCount: 0,
+              staffCount: 0,
+              visitorCount: 0,
+              cumulativeCount: 0
+            });
+          }
+          try {
+            localStorage.removeItem(TIMELINE_STORAGE_KEY);
+          } catch (_) {}
+          fetch('/api/people/timeline', { method: 'DELETE' }).catch(() => {});
+          updateMetricsDisplay();
+        }
+      });
+    }
+
+    // Mouse Tracking for Interactive Tooltip & Crosshair
+    if (graphWrapper) {
+      graphWrapper.addEventListener('mousemove', (e) => {
+        const rect = graphWrapper.getBoundingClientRect();
+        hoverState = {
+          mouseX: e.clientX - rect.left,
+          mouseY: e.clientY - rect.top
+        };
+      });
+
+      graphWrapper.addEventListener('mouseleave', () => {
+        hoverState = null;
+        if (graphTooltip) graphTooltip.classList.add('hidden');
+      });
+    }
+
+    // Series Checkbox listeners
+    if (chkSeriesTotal) chkSeriesTotal.addEventListener('change', () => renderPeopleGraph());
+    if (chkSeriesStaff) chkSeriesStaff.addEventListener('change', () => renderPeopleGraph());
+    if (chkSeriesVisitors) chkSeriesVisitors.addEventListener('change', () => renderPeopleGraph());
+
+    // Window Resize Handler
+    window.addEventListener('resize', () => {
+      renderPeopleGraph();
+      renderPopularTimesGraph();
+    });
+  }
+
+  // =========================================================
+  // POPULAR TIMES (DAY & HOURLY HISTOGRAM ENGINE)
+  // =========================================================
+  const popularTimesCanvas = document.getElementById('popularTimesCanvas');
+  const popularChartWrapper = document.getElementById('popularChartWrapper');
+  const popularTooltip = document.getElementById('popularTooltip');
+  const popularDaySelect = document.getElementById('popularDaySelect');
+  const btnPrevDay = document.getElementById('btnPrevDay');
+  const btnNextDay = document.getElementById('btnNextDay');
+  const popPeakHour = document.getElementById('popPeakHour');
+  const popDailyTotal = document.getElementById('popDailyTotal');
+  const popCurrentStatus = document.getElementById('popCurrentStatus');
+  const btnSeedPopular = document.getElementById('btnSeedPopular');
+  const btnExportPopularCsv = document.getElementById('btnExportPopularCsv');
+
+  const btnTabPopularTimes = document.getElementById('btnTabPopularTimes');
+  const btnTabLiveGraph = document.getElementById('btnTabLiveGraph');
+  const popularTimesSection = document.getElementById('popularTimesSection');
+  const liveGraphSection = document.getElementById('liveGraphSection');
+
+  const POPULAR_STORAGE_KEY = 'ceova_popular_times_cache_v3';
+  const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+  let popularTimesData = {};
+  let currentPopularDay = new Date().getDay(); // 0 = Sun, 1 = Mon, ..., 4 = Thu
+  let hoveredPopularSlot = null; // index 0..16
+
+  if (popularDaySelect) {
+    popularDaySelect.value = String(currentPopularDay);
+  }
+
+  // Purge deprecated mock cache from localStorage
+  try {
+    localStorage.removeItem('ceova_popular_times_cache_v2');
+    const cached = localStorage.getItem(POPULAR_STORAGE_KEY);
+    if (cached) {
+      popularTimesData = JSON.parse(cached);
+    }
+  } catch (_) {}
+
+  // Fetch from server SQLite database
+  async function loadPopularTimesData(day = currentPopularDay) {
+    try {
+      const res = await fetch(`/api/people/popular-times?day_of_week=${day}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.allDays) {
+        popularTimesData = data.allDays;
+        try {
+          localStorage.setItem(POPULAR_STORAGE_KEY, JSON.stringify(popularTimesData));
+        } catch (_) {}
+      }
+      renderPopularTimesGraph();
+    } catch (_) {
+      renderPopularTimesGraph();
+    }
+  }
+
+  // Record a live detection sample to the current day & hour
+  function recordLivePopularSample(count) {
+    const now = new Date();
+    const day = now.getDay();
+    const hour = now.getHours();
+
+    if (popularTimesData && popularTimesData[day] && popularTimesData[day].hours) {
+      const hrObj = popularTimesData[day].hours.find(h => h.hour === hour);
+      if (hrObj) {
+        const prevSamples = hrObj.sampleCount || 0;
+        if (prevSamples === 0) {
+          hrObj.sampleCount = 1;
+          hrObj.avgPeople = count;
+          hrObj.peakPeople = count;
+        } else {
+          hrObj.sampleCount = prevSamples + 1;
+          hrObj.avgPeople = Math.round(((hrObj.avgPeople * prevSamples + count) / hrObj.sampleCount));
+          hrObj.peakPeople = Math.max(hrObj.peakPeople || 0, count);
+        }
+
+        try {
+          localStorage.setItem(POPULAR_STORAGE_KEY, JSON.stringify(popularTimesData));
+        } catch (_) {}
+      }
+    }
+
+    // Also persist to SQLite backend
+    fetch('/api/people/popular-times/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ day_of_week: day, hour_of_day: hour, count })
+    }).catch(() => {});
+
+    if (day === currentPopularDay) {
+      renderPopularTimesGraph();
+    }
+  }
+
+  // Render Popular Times Histogram Canvas
+  function renderPopularTimesGraph() {
+    if (!popularTimesCanvas || !popularChartWrapper) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = popularChartWrapper.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+
+    if (w <= 0 || h <= 0) return;
+
+    if (popularTimesCanvas.width !== Math.round(w * dpr) || popularTimesCanvas.height !== Math.round(h * dpr)) {
+      popularTimesCanvas.width = Math.round(w * dpr);
+      popularTimesCanvas.height = Math.round(h * dpr);
+    }
+
+    const ctx = popularTimesCanvas.getContext('2d');
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // Visible hours range: 6 AM (6) to 10 PM (22) = 17 bars matching 6a, 9a, 12p, 3p, 6p, 9p
+    const startHour = 6;
+    const endHour = 22;
+    const totalBars = endHour - startHour + 1; // 17 bars
+
+    const dayObj = popularTimesData[currentPopularDay];
+    const allHours = dayObj && dayObj.hours ? dayObj.hours : [];
+
+    const chartHours = [];
+    let maxCount = 0;
+    let busiestHourObj = null;
+    let dailySum = 0;
+
+    for (let hr = startHour; hr <= endHour; hr++) {
+      const found = allHours.find(h => h.hour === hr);
+      const avg = found ? Math.round(found.avgPeople) : 0;
+      const peak = found ? found.peakPeople : 0;
+      const period = hr >= 12 ? 'PM' : 'AM';
+      const dispH = hr % 12 === 0 ? 12 : hr % 12;
+      const label = `${dispH} ${period}`;
+      const short = `${dispH}${period.toLowerCase()[0]}`;
+
+      if (avg > maxCount) {
+        maxCount = avg;
+        busiestHourObj = { hour: hr, label, avg, peak };
+      }
+      dailySum += avg;
+
+      chartHours.push({
+        hour: hr,
+        label,
+        short,
+        avg,
+        peak
+      });
+    }
+
+    // Update Summary Strip
+    if (popPeakHour) {
+      if (busiestHourObj && busiestHourObj.avg > 0) {
+        const nextH = (busiestHourObj.hour + 1) % 12 === 0 ? 12 : (busiestHourObj.hour + 1) % 12;
+        const nextPeriod = (busiestHourObj.hour + 1) >= 12 ? 'PM' : 'AM';
+        popPeakHour.textContent = `${busiestHourObj.label} - ${nextH} ${nextPeriod} (${busiestHourObj.avg} People Avg)`;
+      } else {
+        popPeakHour.textContent = '--';
+      }
+    }
+    if (popDailyTotal) {
+      popDailyTotal.textContent = `${dailySum} People Total`;
+    }
+    if (popCurrentStatus) {
+      const now = new Date();
+      const isToday = now.getDay() === currentPopularDay;
+      if (isToday) {
+        const currHour = now.getHours();
+        const currObj = chartHours.find(h => h.hour === currHour);
+        const liveCount = (peopleTimeline.length > 0) ? peopleTimeline[peopleTimeline.length - 1].totalCount : 0;
+        const typical = currObj ? currObj.avg : 0;
+        if (typical > 0) {
+          popCurrentStatus.textContent = `Live: ${liveCount} in view (usually ~${typical} at ${currHour % 12 || 12} ${currHour >= 12 ? 'PM' : 'AM'})`;
+        } else {
+          popCurrentStatus.textContent = `Live: ${liveCount} in view (recording real live detections)`;
+        }
+      } else {
+        popCurrentStatus.textContent = `Day View: ${DAY_NAMES[currentPopularDay]} (Recorded Traffic)`;
+      }
+    }
+
+    // Chart margins
+    const pad = { left: 16, right: 16, top: 22, bottom: 8 };
+    const chartW = w - pad.left - pad.right;
+    const chartH = h - pad.top - pad.bottom;
+    const slotW = chartW / totalBars;
+    const barW = Math.max(6, Math.min(26, slotW * 0.72));
+    const scaleMax = Math.max(10, Math.ceil(maxCount * 1.15));
+
+    const now = new Date();
+    const isToday = now.getDay() === currentPopularDay;
+    const currentHour = now.getHours();
+
+    // If completely clean (0 data across the day), display subtle live status notice
+    if (maxCount === 0) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.font = '500 12px Plus Jakarta Sans, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('No people recorded yet • Ready to track live CCTV detections', w / 2, pad.top + chartH / 2 - 6);
+      ctx.restore();
+    }
+
+    // Render bars
+    for (let i = 0; i < totalBars; i++) {
+      const item = chartHours[i];
+      const slotX = pad.left + i * slotW;
+      const barX = slotX + (slotW - barW) / 2;
+
+      let barH = 0;
+      if (item.avg > 0) {
+        barH = Math.max(4, (item.avg / scaleMax) * (chartH - 8));
+      }
+      const barY = pad.top + chartH - barH;
+
+      const isCurrentHour = isToday && (item.hour === currentHour);
+      const isHovered = hoveredPopularSlot === i;
+
+      ctx.save();
+
+      if (barH > 0) {
+        // Rounded bar top
+        const r = Math.min(4, barW / 2);
+        ctx.beginPath();
+        ctx.moveTo(barX, pad.top + chartH);
+        ctx.lineTo(barX, barY + r);
+        ctx.quadraticCurveTo(barX, barY, barX + r, barY);
+        ctx.lineTo(barX + barW - r, barY);
+        ctx.quadraticCurveTo(barX + barW, barY, barX + barW, barY + r);
+        ctx.lineTo(barX + barW, pad.top + chartH);
+        ctx.closePath();
+
+        if (isCurrentHour) {
+          // Vibrant Glowing Green for Live Current Hour
+          ctx.fillStyle = isHovered ? '#4ade80' : '#22c55e';
+          ctx.shadowColor = 'rgba(34, 197, 94, 0.7)';
+          ctx.shadowBlur = 10;
+        } else if (isHovered) {
+          // Highlighted Teal
+          ctx.fillStyle = '#38bdf8';
+          ctx.shadowColor = 'rgba(56, 189, 248, 0.6)';
+          ctx.shadowBlur = 8;
+        } else {
+          // Signature Google Maps teal color (#2a9d8f)
+          ctx.fillStyle = '#2a9d8f';
+        }
+
+        ctx.fill();
+
+        // If current hour, draw a small live pulsing beacon above it
+        if (isCurrentHour) {
+          const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, barY - 7, 3 + pulse * 2, 0, Math.PI * 2);
+          ctx.fillStyle = '#4ade80';
+          ctx.shadowColor = '#22c55e';
+          ctx.shadowBlur = 6;
+          ctx.fill();
+        }
+      } else {
+        if (isCurrentHour) {
+          // Subtle glowing live dot on the baseline for the current hour
+          const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, pad.top + chartH - 3, 3 + pulse, 0, Math.PI * 2);
+          ctx.fillStyle = '#22c55e';
+          ctx.shadowColor = 'rgba(34, 197, 94, 0.8)';
+          ctx.shadowBlur = 8;
+          ctx.fill();
+        } else {
+          // Subtle dot for 0 count
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, pad.top + chartH - 2, 1.5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.fill();
+        }
+      }
+
+      ctx.restore();
+    }
+
+    // Tooltip update
+    if (hoveredPopularSlot !== null && hoveredPopularSlot >= 0 && hoveredPopularSlot < totalBars) {
+      const item = chartHours[hoveredPopularSlot];
+      const slotX = pad.left + hoveredPopularSlot * slotW;
+      const barCenterX = slotX + slotW / 2;
+
+      let barH = item.avg > 0 ? Math.max(4, (item.avg / scaleMax) * (chartH - 8)) : 0;
+      const barTopY = pad.top + chartH - barH;
+
+      if (popularTooltip) {
+        const isCurrent = isToday && (item.hour === currentHour);
+        popularTooltip.innerHTML = `
+          <div style="font-weight:700; color:var(--accent-cyan); border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:3px; margin-bottom:3px;">
+            🕒 ${item.label} ${isCurrent ? '<span style="color:var(--accent-grass); font-size:0.65rem;">● LIVE</span>' : ''}
+          </div>
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <span style="color:#a1a1aa;">Average People:</span>
+            <strong style="color:#fff;">${item.avg}</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <span style="color:#a1a1aa;">Peak Occupancy:</span>
+            <strong style="color:#f59e0b;">${item.peak}</strong>
+          </div>
+        `;
+
+        const ttX = Math.max(60, Math.min(w - 60, barCenterX));
+        const ttY = Math.max(40, barTopY - 10);
+        popularTooltip.style.left = `${ttX}px`;
+        popularTooltip.style.top = `${ttY}px`;
+        popularTooltip.classList.remove('hidden');
+      }
+    } else {
+      if (popularTooltip) popularTooltip.classList.add('hidden');
+    }
+
+    ctx.restore();
+  }
+
+  // Popular Times Event Listeners
+  function setupPopularTimesControls() {
+    // Mode Switcher Tabs
+    if (btnTabPopularTimes && btnTabLiveGraph) {
+      btnTabPopularTimes.addEventListener('click', () => {
+        btnTabPopularTimes.classList.add('active');
+        btnTabLiveGraph.classList.remove('active');
+        if (popularTimesSection) popularTimesSection.style.display = 'flex';
+        if (liveGraphSection) liveGraphSection.style.display = 'none';
+        renderPopularTimesGraph();
+      });
+
+      btnTabLiveGraph.addEventListener('click', () => {
+        btnTabLiveGraph.classList.add('active');
+        btnTabPopularTimes.classList.remove('active');
+        if (popularTimesSection) popularTimesSection.style.display = 'none';
+        if (liveGraphSection) liveGraphSection.style.display = 'flex';
+        renderPeopleGraph();
+      });
+    }
+
+    // Day dropdown selector
+    if (popularDaySelect) {
+      popularDaySelect.addEventListener('change', () => {
+        currentPopularDay = parseInt(popularDaySelect.value, 10);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Previous day arrow
+    if (btnPrevDay) {
+      btnPrevDay.addEventListener('click', () => {
+        currentPopularDay = (currentPopularDay + 6) % 7;
+        if (popularDaySelect) popularDaySelect.value = String(currentPopularDay);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Next day arrow
+    if (btnNextDay) {
+      btnNextDay.addEventListener('click', () => {
+        currentPopularDay = (currentPopularDay + 1) % 7;
+        if (popularDaySelect) popularDaySelect.value = String(currentPopularDay);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Clear data button
+    if (btnSeedPopular) {
+      btnSeedPopular.addEventListener('click', async () => {
+        if (confirm('Clear all recorded people occupancy data and reset to 0?')) {
+          try {
+            await fetch('/api/people/popular-times/reset', { method: 'POST' });
+            try {
+              localStorage.removeItem(POPULAR_STORAGE_KEY);
+            } catch (_) {}
+            popularTimesData = {};
+            await loadPopularTimesData(currentPopularDay);
+            alert('All local occupancy data cleared and reset to 0.');
+          } catch (e) {
+            alert('Reset failed: ' + e.message);
+          }
+        }
+      });
+    }
+
+    // Export Popular Times CSV
+    if (btnExportPopularCsv) {
+      btnExportPopularCsv.addEventListener('click', () => {
+        const dayObj = popularTimesData[currentPopularDay];
+        if (!dayObj || !dayObj.hours || dayObj.hours.length === 0) {
+          alert('No hourly data available to export.');
+          return;
+        }
+
+        let csv = 'Day,Hour_24,Hour_Label,Average_People,Peak_People,Sample_Count\n';
+        for (const h of dayObj.hours) {
+          csv += `"${dayObj.dayName}",${h.hour},"${h.label}",${h.avgPeople},${h.peakPeople},${h.sampleCount || 10}\n`;
+        }
+
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ceova_popular_times_${dayObj.dayName.toLowerCase()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Mouse Tracking on Popular Times Canvas
+    if (popularChartWrapper) {
+      popularChartWrapper.addEventListener('mousemove', (e) => {
+        const rect = popularChartWrapper.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const padLeft = 16;
+        const padRight = 16;
+        const chartW = rect.width - padLeft - padRight;
+        const slotW = chartW / 17;
+
+        if (mouseX >= padLeft && mouseX <= (padLeft + chartW)) {
+          const slot = Math.floor((mouseX - padLeft) / slotW);
+          hoveredPopularSlot = Math.max(0, Math.min(16, slot));
+        } else {
+          hoveredPopularSlot = null;
+        }
+        renderPopularTimesGraph();
+      });
+
+      popularChartWrapper.addEventListener('mouseleave', () => {
+        hoveredPopularSlot = null;
+        if (popularTooltip) popularTooltip.classList.add('hidden');
+        renderPopularTimesGraph();
+      });
+    }
+  }
+
   // Apply initial saved preferences
   applyAspectMode(currentAspectMode, false);
   applyFitMode(currentFitMode, false);
@@ -2989,5 +4777,10 @@
   // Startup Initialization
   setupNetworkAndQR();
   initWebSocket();
+  checkActiveCameraOnLoad();
   fetchLivePeopleSummary();
+  setupGraphControls();
+  setupPopularTimesControls();
+  loadPopularTimesData();
+  graphAnimationLoop();
 })();
