@@ -35,9 +35,7 @@
   font-size: 2.4rem;
   font-weight: 800;
   letter-spacing: -0.03em;
-  background: linear-gradient(135deg, #ffffff 40%, var(--accent-sky-light) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
+  color: #ffffff;
   margin-bottom: 0.75rem;
 }
 
@@ -209,15 +207,15 @@
   align-items: center;
   justify-content: center;
   gap: 10px;
-  background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%);
-  border: 1px solid rgba(56, 189, 248, 0.4);
-  color: #ffffff;
+  background: #ffffff;
+  border: 1px solid #ffffff;
+  color: #000000;
   font-size: 1rem;
   font-weight: 700;
   padding: 14px 20px;
   border-radius: 12px;
   cursor: pointer;
-  box-shadow: 0 10px 25px -5px rgba(2, 132, 199, 0.4);
+  box-shadow: none;
   transition: all 0.25s ease;
 }
 
@@ -329,7 +327,7 @@
 
 .progress-fill {
   height: 100%;
-  background: linear-gradient(90deg, #0ea5e9, #10b981);
+  background: #ffffff;
   border-radius: 4px;
   width: 0%;
   transition: width 0.3s ease;
@@ -445,9 +443,9 @@
 }
 
 .btn-connect-cam {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  border: 1px solid rgba(16, 185, 129, 0.4);
-  color: #ffffff;
+  background: #ffffff;
+  border: 1px solid #ffffff;
+  color: #000000;
   padding: 10px 18px;
   border-radius: 8px;
   font-size: 0.85rem;
@@ -458,6 +456,6 @@
 }
 
 .btn-connect-cam:hover {
-  filter: brightness(1.1);
-  box-shadow: 0 4px 15px rgba(16, 185, 129, 0.4);
+  background: #e4e4e7;
+  box-shadow: none;
 }

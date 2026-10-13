@@ -27,11 +27,14 @@ function getLocalIpAddresses() {
   return addresses;
 }
 
+const { resolveDataDir } = require('./db/database');
+
 const localIps = getLocalIpAddresses();
 const primaryIp = localIps[0] || '127.0.0.1';
 
-// Setup or load SSL certificates for HTTPS (Required for phone camera getUserMedia access)
-const sslDir = path.join(__dirname, 'ssl');
+// Setup or load SSL certificates for HTTPS (Stored in application data dir)
+const dataDir = resolveDataDir();
+const sslDir = path.join(dataDir, 'ssl');
 if (!fs.existsSync(sslDir)) {
   fs.mkdirSync(sslDir, { recursive: true });
 }
@@ -60,6 +63,22 @@ if (fs.existsSync(keyPath) && fs.existsSync(certPath)) {
     cert: pems.cert
   };
 }
+
+// Force single-page application: redirect any legacy connect.html to /
+app.get(['/connect.html', '/connect'], (req, res) => {
+  res.redirect('/');
+});
+
+// CORS middleware for desktop app and cross-origin embedding
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
 
 // Serve static frontend files
 app.use(express.static(path.join(__dirname, 'public')));
@@ -101,16 +120,28 @@ app.get('/api/qr', async (req, res) => {
 // Create HTTPS Server (Primary)
 const httpsServer = https.createServer(sslOptions, app);
 
-// Create HTTP Server (Secondary / Redirect or local fallback)
+// Create HTTP Server (Direct serving for loopback / desktop app; redirect remote LAN to HTTPS for camera access)
 const httpServer = http.createServer((req, res) => {
-  // Redirect HTTP to HTTPS for camera security compatibility
   const host = req.headers.host ? req.headers.host.split(':')[0] : primaryIp;
+  const isLoopback = host === '127.0.0.1' || host === 'localhost' || host === '::1';
+  if (isLoopback) {
+    return app(req, res);
+  }
   res.writeHead(301, { Location: `https://${host}:${PORT}${req.url}` });
   res.end();
 });
 
-// WebSocket Signaling Server attached to HTTPS
-const wss = new WebSocketServer({ server: httpsServer });
+// WebSocket Signaling Server attached to both HTTPS and HTTP
+const wss = new WebSocketServer({ noServer: true });
+
+function handleUpgrade(request, socket, head) {
+  wss.handleUpgrade(request, socket, head, (ws) => {
+    wss.emit('connection', ws, request);
+  });
+}
+
+httpsServer.on('upgrade', handleUpgrade);
+httpServer.on('upgrade', handleUpgrade);
 
 // Rooms map: roomId -> { viewers: Set(ws), broadcasters: Set(ws) }
 const rooms = new Map();
@@ -180,81 +211,37 @@ const { rtspStreamManager } = require('./services/rtsp_stream_manager');
 const cameraDiscoveryRouter = createCameraDiscoveryRouter();
 app.use(cameraDiscoveryRouter);
 
+const { pipeHttpCameraStream } = require('./services/http_camera_client');
+
 // HTTP Video Stream Proxy — forwards IP Webcam (Android) streams to the browser
-// Supports Basic Auth embedded in URL: http://user:pass@host:port/path
+// Supports both Basic Auth and RFC 2617 Digest Auth seamlessly
 app.get('/api/proxy-stream', (req, res) => {
-  const streamUrl = req.query.url;
-  if (!streamUrl) return res.status(400).json({ error: 'Missing url query param' });
+  let streamUrl = req.query.url;
+  const camId = req.query.camId;
+
+  if (!streamUrl && camId) {
+    try {
+      const { getDatabase } = require('./db/database');
+      const db = getDatabase();
+      const cam = db.getCamera(camId);
+      if (cam && cam.stream_url) {
+        streamUrl = cam.stream_url;
+      }
+    } catch (_e) {}
+  }
+
+  if (!streamUrl) return res.status(400).json({ error: 'Missing stream endpoint or camera ID' });
+
+  if (streamUrl.startsWith('/api/proxy-stream?url=')) {
+    streamUrl = decodeURIComponent(streamUrl.replace('/api/proxy-stream?url=', ''));
+  }
 
   try {
-    const targetUrl = new URL(streamUrl);
-    const isHttps = targetUrl.protocol === 'https:';
-    const lib = isHttps ? require('https') : require('http');
-
-    // Build request options — extract credentials and send as Authorization header
-    const reqOptions = {
-      hostname: targetUrl.hostname,
-      port: targetUrl.port,
-      path: targetUrl.pathname + (targetUrl.search || ''),
-      method: 'GET',
-      rejectUnauthorized: false,
-      headers: {
-        'User-Agent': 'CEOVA-CCTV/1.0',
-        'Accept': '*/*'
-      }
-    };
-
-    if (targetUrl.username && targetUrl.password) {
-      const creds = Buffer.from(`${decodeURIComponent(targetUrl.username)}:${decodeURIComponent(targetUrl.password)}`).toString('base64');
-      reqOptions.headers['Authorization'] = `Basic ${creds}`;
-    }
-
-    // Disable socket timeouts for continuous streams
-    if (req.socket) {
-      req.socket.setTimeout(0);
-      if (req.socket.setKeepAlive) req.socket.setKeepAlive(true, 1000);
-      if (req.socket.setNoDelay) req.socket.setNoDelay(true);
-    }
-
-    const proxyReq = lib.request(reqOptions, (proxyRes) => {
-      if (proxyRes.statusCode === 401) {
-        console.warn('[ProxyStream] 401 Unauthorized — check camera credentials');
-        if (!res.headersSent) res.status(401).json({ error: 'Camera returned 401 Unauthorized. Check credentials.' });
-        return;
-      }
-
-      // Pass down exact content-type (crucial for multipart/x-mixed-replace; boundary=...)
-      const contentType = proxyRes.headers['content-type'] || 'image/jpeg';
-      res.setHeader('Content-Type', contentType);
-      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate, max-age=0');
-      res.setHeader('Pragma', 'no-cache');
-      res.setHeader('Expires', '0');
-      res.setHeader('X-Accel-Buffering', 'no');
-      res.setHeader('Access-Control-Allow-Origin', '*');
-
-      if (res.socket && res.socket.setNoDelay) {
-        res.socket.setNoDelay(true);
-      }
-
-      proxyRes.pipe(res);
-    });
-
-    proxyReq.on('socket', (sock) => {
-      sock.setNoDelay(true);
-    });
-
-    proxyReq.on('error', (err) => {
-      if (!res.headersSent) {
-        res.status(502).json({ error: 'Camera unreachable', detail: err.message });
-      }
-    });
-
-    proxyReq.end();
-    req.on('close', () => {
-      try { proxyReq.destroy(); } catch (_) {}
-    });
+    pipeHttpCameraStream(streamUrl, res, req);
   } catch (err) {
-    res.status(400).json({ error: 'Invalid stream URL', detail: err.message });
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Failed to proxy camera stream', details: err.message });
+    }
   }
 });
 
@@ -296,16 +283,21 @@ registry.initializeAll().catch(err => {
 });
 
 // Clean shutdown handler
-process.on('SIGINT', () => {
-  rtspStreamManager.stopAll();
-  yoloBridge.stop();
-  process.exit(0);
-});
-process.on('SIGTERM', () => {
-  rtspStreamManager.stopAll();
-  yoloBridge.stop();
-  process.exit(0);
-});
+function cleanShutdown() {
+  try { rtspStreamManager.stopAll(); } catch (_e) {}
+  try { yoloBridge.stop(); } catch (_e) {}
+  try {
+    const { getLoopbackAgent } = require('./services/loopback_agent');
+    getLoopbackAgent().stop();
+  } catch (_e) {}
+  try { wss.close(); } catch (_e) {}
+  try { httpsServer.close(); } catch (_e) {}
+  try { httpServer.close(); } catch (_e) {}
+  setTimeout(() => process.exit(0), 100);
+}
+
+process.on('SIGINT', cleanShutdown);
+process.on('SIGTERM', cleanShutdown);
 
 // Bot Management & Telemetry APIs
 app.get('/api/bots/health', (req, res) => {
@@ -492,4 +484,11 @@ httpsServer.listen(PORT, '0.0.0.0', () => {
 
 httpServer.listen(HTTP_PORT, '0.0.0.0', () => {
   console.log(`  🔄  HTTP to HTTPS Redirector running on port ${HTTP_PORT}`);
+});
+
+// Start CEOVA Desktop Loopback Agent (Port 8085)
+const { getLoopbackAgent } = require('./services/loopback_agent');
+const loopbackAgent = getLoopbackAgent();
+loopbackAgent.start().catch(err => {
+  console.warn('[AGENT_8085] Notice:', err.message);
 });

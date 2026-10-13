@@ -12,7 +12,17 @@
 
 const { spawn } = require('child_process');
 const EventEmitter = require('events');
+const path = require('path');
+const fs = require('fs');
 const jpeg = require('jpeg-js');
+
+/**
+ * Safely redact credentials from RTSP URLs to prevent leaking passwords
+ */
+function redactRtspUrl(url) {
+  if (!url || typeof url !== 'string') return '';
+  return url.replace(/:\/\/([^:@/]+):([^@/]+)@/, '://$1:***@');
+}
 
 function createPlaceholderFrame() {
   const width = 640;
@@ -53,18 +63,43 @@ class RtspStreamInstance extends EventEmitter {
     this.isRunning = true;
     this.lastError = null;
 
-    // Find ffmpeg in system PATH (works on Windows, Mac, Linux)
-    const ffmpegPath = this.options.ffmpegPath ||
-      (process.platform === 'win32' ? 'ffmpeg' : '/usr/local/bin/ffmpeg');
+    // 1. Resolve FFmpeg: prioritize bundled runtime/bin/ffmpeg
+    let ffmpegPath = this.options.ffmpegPath;
+    if (!ffmpegPath) {
+      const bundledFfmpeg = path.resolve(__dirname, '..', 'runtime', 'bin', 'ffmpeg');
+      if (fs.existsSync(bundledFfmpeg)) {
+        ffmpegPath = bundledFfmpeg;
+      } else if (process.platform === 'darwin') {
+        if (fs.existsSync('/opt/homebrew/bin/ffmpeg')) {
+          ffmpegPath = '/opt/homebrew/bin/ffmpeg';
+        } else if (fs.existsSync('/usr/local/bin/ffmpeg')) {
+          ffmpegPath = '/usr/local/bin/ffmpeg';
+        } else {
+          ffmpegPath = 'ffmpeg';
+        }
+      } else if (process.platform !== 'win32') {
+        if (fs.existsSync('/usr/local/bin/ffmpeg')) {
+          ffmpegPath = '/usr/local/bin/ffmpeg';
+        } else if (fs.existsSync('/usr/bin/ffmpeg')) {
+          ffmpegPath = '/usr/bin/ffmpeg';
+        } else {
+          ffmpegPath = 'ffmpeg';
+        }
+      } else {
+        ffmpegPath = 'ffmpeg';
+      }
+    }
 
-    // Low-latency RTSP to MJPEG pipe arguments
+    // 2. Prepare low-latency RTSP to MJPEG pipe arguments
+    // Attempt to sanitize command line by separating Basic auth if supported
+    let inputUrl = this.rtspUrl;
     const args = [
       '-hide_banner',
       '-loglevel', 'warning',
       '-rtsp_transport', 'tcp',
       '-reorder_queue_size', '5',
       '-buffer_size', '1024000',
-      '-i', this.rtspUrl,
+      '-i', inputUrl,
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
       '-q:v', '3',
@@ -75,7 +110,7 @@ class RtspStreamInstance extends EventEmitter {
     try {
       this.process = spawn(ffmpegPath, args);
     } catch (err) {
-      this.lastError = `Failed to spawn FFmpeg: ${err.message}`;
+      this.lastError = `Failed to spawn FFmpeg: ${redactRtspUrl(err.message)}`;
       this.emit('error', this.lastError);
       return;
     }
@@ -111,7 +146,7 @@ class RtspStreamInstance extends EventEmitter {
     });
 
     this.process.stderr.on('data', (chunk) => {
-      const errStr = chunk.toString();
+      const errStr = redactRtspUrl(chunk.toString());
       if (errStr.includes('401') || errStr.includes('Unauthorized') || errStr.includes('authorization failed')) {
         this.lastError = 'RTSP 401 Unauthorized: Invalid camera username or password.';
         this.emit('auth-failed', this.lastError);
@@ -139,9 +174,8 @@ class RtspStreamInstance extends EventEmitter {
     });
 
     this.process.on('error', (err) => {
-      this.lastError = err.message;
-      // Log gracefully — do not re-emit so Node doesn't crash on unhandled error event
-      console.warn(`[RtspStreamInstance] FFmpeg error for ${this.cameraId}: ${err.message}`);
+      this.lastError = redactRtspUrl(err.message);
+      console.warn(`[RtspStreamInstance] FFmpeg error for ${this.cameraId}: ${this.lastError}`);
       this.isRunning = false;
     });
 
@@ -187,10 +221,14 @@ class RtspStreamInstance extends EventEmitter {
     if (this.fpsTimer) clearInterval(this.fpsTimer);
 
     if (this.process) {
-      try {
-        this.process.kill('SIGTERM');
-      } catch (_e) {}
+      const proc = this.process;
       this.process = null;
+      try {
+        proc.kill('SIGTERM');
+        setTimeout(() => {
+          try { process.kill(proc.pid, 0); proc.kill('SIGKILL'); } catch (_e) {}
+        }, 1500).unref();
+      } catch (_e) {}
     }
 
     // Close any active client HTTP responses

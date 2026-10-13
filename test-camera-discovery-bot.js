@@ -25,6 +25,7 @@ async function runTest() {
 
   let mockRtspServer = null;
   let testHttpServer = null;
+  const db = getDatabase();
   const mockRtspPort = 15544; // Test port simulating camera RTSP
   const mockApiPort = 19876;
   const eventsCaptured = [];
@@ -49,7 +50,7 @@ async function runTest() {
     const candidateIps = bot._generateCandidateIpList(subnets);
     
     console.log(`   Detected ${subnets.length} local subnet(s): ${subnets.map(s => s.cidr).join(', ')}`);
-    console.log(`   Generated ${candidateIps.length} candidate addresses including CCTV factory defaults (192.168.1.64, 192.168.1.108).`);
+    console.log(`   Generated ${candidateIps.length} candidate addresses from active subnet interfaces.`);
 
     if (candidateIps.length < 250) {
       throw new Error('Candidate IP generation failed to cover subnet');
@@ -134,7 +135,6 @@ async function runTest() {
     // Test 5: Full API Route & Database Camera Registration
     // -------------------------------------------------------------
     console.log('\n--- TEST 5: API Routes & Database Registration ---');
-    const db = getDatabase();
     const app = express();
     app.use(express.json());
     app.use(createCameraDiscoveryRouter({ db }));
@@ -177,6 +177,9 @@ async function runTest() {
   } finally {
     if (mockRtspServer) mockRtspServer.close();
     if (testHttpServer) testHttpServer.close();
+    try {
+      db.removeCamera('ORG-DEFAULT', 'CAM_TEST_HIKVISION');
+    } catch (_) {}
   }
 }
 

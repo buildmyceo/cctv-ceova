@@ -109,7 +109,7 @@
           </span>
           <div class="ceova-meta-item">
             <span>Analytics:</span>
-            <strong style="color: ${this.state.entitlements.analytics ? '#10b981' : '#94a3b8'}">
+            <strong style="color: ${this.state.entitlements.analytics ? '#ffffff' : '#71717a'}">
               ${this.state.entitlements.analytics ? 'ENABLED' : 'DISABLED'}
             </strong>
           </div>

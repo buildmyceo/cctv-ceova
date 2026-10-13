@@ -99,6 +99,7 @@
   const telemetryBotStatus = document.getElementById('telemetryBotStatus');
   const telemetryHumanCount = document.getElementById('telemetryHumanCount');
   const telemetryTotalTracked = document.getElementById('telemetryTotalTracked');
+  const btnResetTrackCount = document.getElementById('btnResetTrackCount');
   const confidenceValText = document.getElementById('confidenceValText');
   const botConfidence = document.getElementById('botConfidence');
   const botTelemetryDot = document.getElementById('botTelemetryDot');
@@ -207,87 +208,361 @@
   }
 
   // -------------------------------------------------------------
+  // -------------------------------------------------------------
   // CCTV Camera Login & Autonomous Discovery Handler
   // -------------------------------------------------------------
   const overlayCctvForm = document.getElementById('overlayCctvForm');
   const overlayCctvUsername = document.getElementById('overlayCctvUsername');
   const overlayCctvPassword = document.getElementById('overlayCctvPassword');
+  const overlayTogglePassBtn = document.getElementById('overlayTogglePassBtn');
   const overlayBotStatusText = document.getElementById('overlayBotStatusText');
   const overlayBotPulse = document.getElementById('overlayBotPulse');
   const btnOverlayConnect = document.getElementById('btnOverlayConnect');
-  const btnSimulateOverlay = document.getElementById('btnSimulateOverlay');
+  const overlayCameraResults = document.getElementById('overlayCameraResults');
+  const overlayResultsList = document.getElementById('overlayResultsList');
+  const overlayResultsBadge = document.getElementById('overlayResultsBadge');
+  const btnHeaderConnectCam = document.getElementById('btnHeaderConnectCam');
+  const cctvCameraBar = document.getElementById('cctvCameraBar');
+  const cctvCameraBarItems = document.getElementById('cctvCameraBarItems');
 
+  let activeCameraDiscoverySse = null;
+  let currentVerifiedCameras = [];
+
+  // Toggle Password Visibility in Modal
+  if (overlayTogglePassBtn && overlayCctvPassword) {
+    overlayTogglePassBtn.addEventListener('click', () => {
+      if (overlayCctvPassword.type === 'password') {
+        overlayCctvPassword.type = 'text';
+        overlayTogglePassBtn.textContent = '🔒';
+      } else {
+        overlayCctvPassword.type = 'password';
+        overlayTogglePassBtn.textContent = '👁️';
+      }
+    });
+  }
+
+  // Open modal from Header "CONNECT CCTV" button
+  if (btnHeaderConnectCam) {
+    btnHeaderConnectCam.addEventListener('click', () => {
+      if (standbyOverlay) standbyOverlay.classList.remove('hidden');
+    });
+  }
+
+  // Render Discovered Devices in the Modal based on real verification
+  function renderDiscoveryResults(cameras, discoveredHosts) {
+    if (!overlayCameraResults || !overlayResultsList) return;
+    overlayCameraResults.style.display = 'block';
+    overlayResultsList.innerHTML = '';
+
+    const verifiedList = Array.isArray(cameras) ? cameras : [];
+    const hostList = Array.isArray(discoveredHosts) ? discoveredHosts : [];
+
+    if (overlayResultsBadge) {
+      overlayResultsBadge.textContent = `${verifiedList.length} Verified`;
+      overlayResultsBadge.style.background = verifiedList.length > 0 ? 'rgba(74, 222, 128, 0.2)' : '#27272a';
+      overlayResultsBadge.style.color = verifiedList.length > 0 ? '#4ade80' : '#a1a1aa';
+    }
+
+    if (verifiedList.length === 0 && hostList.length === 0) {
+      const emptyDiv = document.createElement('div');
+      emptyDiv.style.cssText = 'font-size:0.8rem; color:#f87171; padding:8px; text-align:center;';
+      emptyDiv.textContent = 'No camera detected on the available network.';
+      overlayResultsList.appendChild(emptyDiv);
+      return;
+    }
+
+    // 1. Render successfully verified cameras
+    verifiedList.forEach((cam) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#18181b; border:1px solid rgba(74,222,128,0.3); border-radius:6px; padding:7px 10px;';
+
+      const info = document.createElement('div');
+      info.style.cssText = 'display:flex; flex-direction:column; gap:2px;';
+      info.innerHTML = `
+        <div style="font-size:0.82rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:6px;">
+          <span style="width:7px; height:7px; border-radius:50%; background:#4ade80;"></span>
+          ${cam.name || cam.brand || 'Camera'} (${cam.ip})
+        </div>
+        <div style="font-size:0.72rem; color:#4ade80; font-family:'JetBrains Mono',monospace;">Status: Connected</div>
+      `;
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'View Stream';
+      btn.style.cssText = 'padding:5px 12px; font-size:0.75rem; font-weight:700; background:#ffffff; color:#000000; border:none; border-radius:5px; cursor:pointer;';
+      btn.addEventListener('click', async () => {
+        await switchCamera(cam);
+        if (standbyOverlay) standbyOverlay.classList.add('hidden');
+      });
+
+      row.appendChild(info);
+      row.appendChild(btn);
+      overlayResultsList.appendChild(row);
+    });
+
+    // 2. Render candidate hosts that failed verification
+    hostList.forEach((h) => {
+      const isAlreadyVerified = verifiedList.some((v) => v.ip === h.ip);
+      if (isAlreadyVerified) return;
+
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#18181b; border:1px solid #27272a; border-radius:6px; padding:7px 10px; opacity:0.85;';
+
+      const statusColor = h.status === 'Authentication failed' ? '#f59e0b' : '#ef4444';
+      const statusText = h.status || 'Unreachable';
+
+      row.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <div style="font-size:0.8rem; font-weight:600; color:#e4e4e7; display:flex; align-items:center; gap:6px;">
+            <span style="width:6px; height:6px; border-radius:50%; background:${statusColor};"></span>
+            ${h.brand || 'Device'} (${h.ip}:${h.port || 554})
+          </div>
+          <div style="font-size:0.7rem; color:${statusColor}; font-family:'JetBrains Mono',monospace;">Status: ${statusText}</div>
+        </div>
+      `;
+      overlayResultsList.appendChild(row);
+    });
+  }
+
+  // Refresh Top Camera Switcher Bar
+  async function refreshCameraSwitcher() {
+    try {
+      const res = await fetch('/api/cameras');
+      const data = await res.json();
+      currentVerifiedCameras = (data && data.cameras) || [];
+
+      if (!cctvCameraBar || !cctvCameraBarItems) return;
+
+      if (currentVerifiedCameras.length === 0) {
+        cctvCameraBar.style.display = 'none';
+        cctvCameraBarItems.innerHTML = '';
+        return;
+      }
+
+      cctvCameraBar.style.display = 'flex';
+      cctvCameraBarItems.innerHTML = '';
+
+      currentVerifiedCameras.forEach((cam, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn ghost';
+        btn.style.cssText = 'padding:4px 10px; font-size:0.74rem; font-family:"JetBrains Mono",monospace; background:rgba(0,0,0,0.7); border:1px solid rgba(255,255,255,0.18); border-radius:6px; cursor:pointer; color:#ffffff;';
+        btn.innerHTML = `● CAM 0${idx + 1}: ${cam.name || cam.ip}`;
+        btn.addEventListener('click', () => switchCamera(cam));
+        cctvCameraBarItems.appendChild(btn);
+      });
+    } catch (_err) {
+      console.warn('[Viewer] Could not refresh camera bar:', _err);
+    }
+  }
+
+  // Switch Active Displayed Camera
+  async function switchCamera(cam) {
+    if (!cam) return;
+    console.log('[Viewer] Switching to camera:', cam.name, cam.id);
+
+    const isHttp = cam.stream_url && (
+      cam.stream_url.startsWith('/api/proxy-stream') ||
+      cam.stream_url.startsWith('http://') ||
+      cam.stream_url.startsWith('https://')
+    );
+
+    if (isHttp) {
+      let cleanBase = cam.stream_url;
+      if (cleanBase.startsWith('/api/proxy-stream?url=')) {
+        cleanBase = decodeURIComponent(cleanBase.replace('/api/proxy-stream?url=', ''));
+      }
+      cleanBase = cleanBase.replace(/\/video$/, '').replace(/\/shot\.jpg$/, '').replace(/\/$/, '');
+
+      if (typeof window.startSmoothStream === 'function') {
+        window.startSmoothStream(cleanBase, cam.name);
+      } else {
+        displayRtspStream(cam.id, cam.name, `/api/proxy-stream?camId=${cam.id}`);
+      }
+    } else {
+      displayRtspStream(cam.id, cam.name, `/api/cameras/${cam.id}/stream.mjpg`);
+    }
+
+    if (osdCameraName) osdCameraName.textContent = cam.name || `CAM-${cam.id}`;
+    await refreshCameraSwitcher();
+  }
+
+  // CCTV Form Submit Handler
   if (overlayCctvForm) {
     overlayCctvForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const username = overlayCctvUsername?.value.trim() || 'admin';
+      const username = overlayCctvUsername?.value.trim() || '';
       const password = overlayCctvPassword?.value || '';
       const targetIp = document.getElementById('overlayCctvIp')?.value.trim() || null;
 
+      if (!username) {
+        if (overlayBotStatusText) overlayBotStatusText.textContent = 'Please enter a CCTV/NVR username.';
+        if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+        return;
+      }
+
       if (btnOverlayConnect) {
         btnOverlayConnect.disabled = true;
-        btnOverlayConnect.innerHTML = '<span class="pulse-dot"></span> Bot Scanning Network...';
+        btnOverlayConnect.innerHTML = '<span class="pulse-dot"></span> Validating &amp; Discovering...';
       }
-      if (overlayBotPulse) overlayBotPulse.style.background = '#38bdf8';
-      if (overlayBotStatusText) overlayBotStatusText.textContent = 'Bot Status: Sweeping local network & testing codes...';
+
+      if (overlayCameraResults) overlayCameraResults.style.display = 'none';
+
+      // 1. Direct Target Test Flow
+      if (targetIp) {
+        if (overlayBotPulse) overlayBotPulse.style.background = '#ffffff';
+        if (overlayBotStatusText) overlayBotStatusText.textContent = `Validating endpoint: ${targetIp}...`;
+
+        try {
+          const testRes = await fetch('/api/cameras/test-connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: targetIp, username, password })
+          });
+          const testData = await testRes.json();
+
+          if (testRes.ok && testData.success) {
+            if (overlayBotPulse) overlayBotPulse.style.background = '#4ade80';
+            if (overlayBotStatusText) overlayBotStatusText.textContent = `✓ ${testData.message}`;
+
+            renderDiscoveryResults([testData.camera], []);
+            await refreshCameraSwitcher();
+
+            setTimeout(async () => {
+              await switchCamera(testData.camera);
+              if (standbyOverlay) standbyOverlay.classList.add('hidden');
+              if (btnOverlayConnect) {
+                btnOverlayConnect.disabled = false;
+                btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
+              }
+            }, 600);
+            return;
+          } else {
+            const failStatus = testData.status || 'Connection error';
+            let errMsg = testData.error || 'Connection failed';
+            if (failStatus === 'Authentication failed') {
+              errMsg = '🔐 Wrong username/password — Camera detected but auth rejected. Check credentials.';
+            } else if (failStatus === 'Unreachable') {
+              const triedIp = targetIp.split(':')[0];
+              errMsg = `📡 ${triedIp} not reachable. Verify: NVR is powered on & connected to same network. Check NVR menu → Network Settings for the correct IP.`;
+            } else if (failStatus === 'Unsupported') {
+              errMsg = '⚠️ Device found but camera stream protocol not recognized. Try a different port (e.g. 554, 8000, 37777).';
+            }
+
+            if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+            if (overlayBotStatusText) overlayBotStatusText.textContent = `❌ ${errMsg}`;
+
+            renderDiscoveryResults([], [{
+              ip: targetIp.split(':')[0],
+              port: targetIp.includes(':') ? parseInt(targetIp.split(':')[1], 10) : 554,
+              brand: 'Device',
+              status: failStatus
+            }]);
+
+            if (btnOverlayConnect) {
+              btnOverlayConnect.disabled = false;
+              btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
+            }
+            return;
+          }
+        } catch (err) {
+          if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+          if (overlayBotStatusText) overlayBotStatusText.textContent = `Connection error: ${err.message}`;
+          if (btnOverlayConnect) {
+            btnOverlayConnect.disabled = false;
+            btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
+          }
+          return;
+        }
+      }
+
+      // 2. Autonomous Network Discovery Flow
+      if (overlayBotPulse) overlayBotPulse.style.background = '#ffffff';
+      if (overlayBotStatusText) overlayBotStatusText.textContent = 'Sweeping reachable network for CCTV/NVR devices...';
+
+      if (activeCameraDiscoverySse) {
+        activeCameraDiscoverySse.close();
+        activeCameraDiscoverySse = null;
+      }
 
       try {
         const res = await fetch('/api/cameras/discover', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ username, password, targetIp })
+          body: JSON.stringify({ username, password })
         });
         const data = await res.json();
-        if (!res.ok) throw new Error(data.error || 'Failed to start bot discovery');
+        if (!res.ok) throw new Error(data.error || 'Failed to start discovery');
 
-        // Listen to SSE progress
-        const evtSource = new EventSource('/api/cameras/discover/events');
-        evtSource.onmessage = async (evtMsg) => {
+        activeCameraDiscoverySse = new EventSource('/api/cameras/discover/events');
+        activeCameraDiscoverySse.onmessage = async (evtMsg) => {
           try {
             const ev = JSON.parse(evtMsg.data);
             if (ev.message && overlayBotStatusText) {
               overlayBotStatusText.textContent = ev.message;
             }
-            if (ev.type === 'CAMERA_MATCHED' && ev.camera) {
-              evtSource.close();
-              if (overlayBotPulse) overlayBotPulse.style.background = '#22c55e';
-              if (overlayBotStatusText) overlayBotStatusText.textContent = `✓ Connected: ${ev.camera.brand} (${ev.camera.ip})`;
-              
-              // Auto-register camera into active surveillance and launch RTSP stream
-              try {
-                const regRes = await fetch('/api/cameras/connect-matched', {
-                  method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({
-                    id: ev.camera.id,
-                    name: `${ev.camera.brand} (${ev.camera.ip})`,
-                    rtspUrl: ev.camera.rtspUrl,
-                    zoneName: 'SALES_FLOOR'
-                  })
-                });
-                const regData = await regRes.json();
-                const streamUrl = (regData && regData.streamUrl) || `/api/cameras/${ev.camera.id}/stream.mjpg`;
 
-                displayRtspStream(ev.camera.id, `${ev.camera.brand} (${ev.camera.ip})`, streamUrl);
-              } catch (regErr) {
-                console.error('Error registering matched camera:', regErr);
-                displayRtspStream(ev.camera.id, `${ev.camera.brand} (${ev.camera.ip})`);
-              }
+            if (ev.type === 'CAMERA_MATCHED' && ev.camera) {
+              if (overlayBotPulse) overlayBotPulse.style.background = '#4ade80';
+              if (overlayBotStatusText) overlayBotStatusText.textContent = `✓ Verified camera: ${ev.camera.brand} (${ev.camera.ip})`;
             } else if (ev.type === 'SCAN_COMPLETED') {
-              evtSource.close();
+              activeCameraDiscoverySse.close();
+              activeCameraDiscoverySse = null;
+
               if (btnOverlayConnect) {
                 btnOverlayConnect.disabled = false;
-                btnOverlayConnect.innerHTML = '⚡ Auto-Detect & Connect Camera';
+                btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
               }
-              if (ev.matchedCount === 0 && overlayBotStatusText) {
-                if (ev.discoveredHosts && ev.discoveredHosts.length > 0) {
-                  const firstH = ev.discoveredHosts[0];
-                  overlayBotStatusText.innerHTML = `Found ${ev.discoveredHosts.length} camera(s) on LAN (<a href="/connect.html" style="color:#38bdf8;text-decoration:underline;">Click to connect ${firstH.ip}</a>)`;
+
+              const matchedCams = ev.cameras || [];
+              const discHosts = ev.discoveredHosts || [];
+
+              renderDiscoveryResults(matchedCams, discHosts);
+              await refreshCameraSwitcher();
+
+              if (matchedCams.length === 0) {
+                if (discHosts.length > 0) {
+                  const hasAuthFail = discHosts.some((h) => h.status === 'Authentication failed');
+                  if (hasAuthFail) {
+                    overlayBotStatusText.textContent = 'Camera detected, but authentication failed.';
+                  } else {
+                    overlayBotStatusText.textContent = 'Device detected but the camera protocol is not supported.';
+                  }
                   if (overlayBotPulse) overlayBotPulse.style.background = '#eab308';
                 } else {
-                  overlayBotStatusText.textContent = 'Scan finished: No cameras found with these credentials.';
+                  overlayBotStatusText.textContent = 'No camera detected on the available network.';
                   if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
                 }
+              } else if (matchedCams.length === 1) {
+                // Rule 4: 1 verified camera -> Show that camera directly
+                overlayBotStatusText.textContent = `✓ 1 verified camera connected: ${matchedCams[0].name || matchedCams[0].ip}`;
+                setTimeout(async () => {
+                  await switchCamera(matchedCams[0]);
+                  if (standbyOverlay) standbyOverlay.classList.add('hidden');
+                }, 700);
+              } else if (matchedCams.length === 2) {
+                // Rule 4: 2 verified cameras -> Show both cameras in switcher and connect first
+                overlayBotStatusText.textContent = `✓ 2 verified cameras detected.`;
+                setTimeout(async () => {
+                  await switchCamera(matchedCams[0]);
+                  if (standbyOverlay) standbyOverlay.classList.add('hidden');
+                }, 700);
+              } else {
+                // Rule 4: More than 2 -> Display all verified cameras in suitable grid/list
+                overlayBotStatusText.textContent = `✓ ${matchedCams.length} verified cameras detected.`;
+                setTimeout(async () => {
+                  await switchCamera(matchedCams[0]);
+                  if (standbyOverlay) standbyOverlay.classList.add('hidden');
+                }, 700);
+              }
+            } else if (ev.type === 'SCAN_FAILED') {
+              activeCameraDiscoverySse.close();
+              activeCameraDiscoverySse = null;
+              if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+              if (overlayBotStatusText) overlayBotStatusText.textContent = `Discovery error: ${ev.message || 'Scan failed'}`;
+              if (btnOverlayConnect) {
+                btnOverlayConnect.disabled = false;
+                btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
               }
             }
           } catch (_err) {}
@@ -296,122 +571,35 @@
         if (overlayBotStatusText) overlayBotStatusText.textContent = `Error: ${err.message}`;
         if (btnOverlayConnect) {
           btnOverlayConnect.disabled = false;
-          btnOverlayConnect.innerHTML = '⚡ Auto-Detect & Connect Camera';
+          btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Camera';
         }
       }
     });
   }
 
-  // Live CCTV Synthetic Stream Generator (for demo / simulation mode)
-  let simStreamInterval = null;
-  function startSimulatedCctvStream() {
-    const simCanvas = document.createElement('canvas');
-    simCanvas.width = 1280;
-    simCanvas.height = 720;
-    const ctx = simCanvas.getContext('2d');
-    
-    let frame = 0;
-    const people = [
-      { x: 340, y: 380, vx: 1.6, vy: 0.15, color: '#38bdf8', label: 'STAFF #1' },
-      { x: 820, y: 410, vx: -1.3, vy: -0.1, color: '#f59e0b', label: 'CUSTOMER' },
-      { x: 580, y: 440, vx: 0.9, vy: 0.25, color: '#10b981', label: 'STAFF #2' }
-    ];
-
-    function drawCctvFrame() {
-      frame++;
-      // Background gradient
-      const grad = ctx.createLinearGradient(0, 0, 0, 720);
-      grad.addColorStop(0, '#0a0f1d');
-      grad.addColorStop(0.45, '#162032');
-      grad.addColorStop(1, '#060a12');
-      ctx.fillStyle = grad;
-      ctx.fillRect(0, 0, 1280, 720);
-
-      // Perspective floor lines
-      ctx.strokeStyle = 'rgba(255, 255, 255, 0.06)';
-      ctx.lineWidth = 1;
-      for (let x = 0; x <= 1280; x += 80) {
-        ctx.beginPath();
-        ctx.moveTo(x, 260);
-        ctx.lineTo((x - 640) * 2.5 + 640, 720);
-        ctx.stroke();
+  // Clear Saved Cameras Button Handler
+  const btnOverlayClearAll = document.getElementById('btnOverlayClearAll');
+  if (btnOverlayClearAll) {
+    btnOverlayClearAll.addEventListener('click', async () => {
+      try {
+        btnOverlayClearAll.disabled = true;
+        btnOverlayClearAll.textContent = 'Clearing...';
+        await fetch('/api/cameras', { method: 'DELETE' });
+        currentVerifiedCameras = [];
+        if (cctvCameraBar) cctvCameraBar.style.display = 'none';
+        if (fallbackImgFeed) fallbackImgFeed.src = '';
+        if (osdCameraName) osdCameraName.textContent = 'NO CAMERA CONNECTED';
+        if (systemStatusText) systemStatusText.textContent = 'STANDBY // DISCONNECTED';
+        if (overlayBotStatusText) overlayBotStatusText.textContent = '✓ All saved camera settings cleared. Enter new IP and credentials to connect.';
+        if (overlayBotPulse) overlayBotPulse.style.background = '#4ade80';
+        if (overlayCameraResults) overlayCameraResults.style.display = 'none';
+        await refreshCameraSwitcher();
+      } catch (err) {
+        if (overlayBotStatusText) overlayBotStatusText.textContent = `Clear failed: ${err.message}`;
+      } finally {
+        btnOverlayClearAll.disabled = false;
+        btnOverlayClearAll.innerHTML = '🗑️ Clear Saved';
       }
-      for (let y = 260; y <= 720; y += 45) {
-        ctx.beginPath();
-        ctx.moveTo(0, y);
-        ctx.lineTo(1280, y);
-        ctx.stroke();
-      }
-
-      // Moving human silhouettes
-      people.forEach(p => {
-        p.x += p.vx;
-        p.y += p.vy;
-        if (p.x < 150 || p.x > 1120) p.vx *= -1;
-        if (p.y < 340 || p.y > 540) p.vy *= -1;
-
-        const bob = Math.sin(frame * 0.18) * 4;
-        ctx.fillStyle = 'rgba(226, 232, 240, 0.88)';
-        // Head
-        ctx.beginPath();
-        ctx.arc(p.x, p.y - 75 + bob, 18, 0, Math.PI * 2);
-        ctx.fill();
-        // Torso
-        ctx.beginPath();
-        ctx.ellipse(p.x, p.y - 20 + bob, 22, 42, 0, 0, Math.PI * 2);
-        ctx.fill();
-        // Legs
-        ctx.fillRect(p.x - 16, p.y + 22 + bob, 10, 48);
-        ctx.fillRect(p.x + 6, p.y + 22 + bob, 10, 48);
-
-        // Security tag
-        ctx.fillStyle = p.color;
-        ctx.font = 'bold 12px "JetBrains Mono", monospace';
-        ctx.fillText(`● ${p.label}`, p.x - 30, p.y - 105 + bob);
-      });
-
-      // CCTV Camera OSD Overlay
-      ctx.fillStyle = '#22c55e';
-      ctx.font = 'bold 16px "JetBrains Mono", monospace';
-      const nowStr = new Date().toISOString().replace('T', ' ').slice(0, 19);
-      ctx.fillText(`REC ● CAM-01 [SALES FLOOR]  ${nowStr}  25.0 FPS`, 30, 40);
-
-      ctx.fillStyle = 'rgba(255,255,255,0.45)';
-      ctx.font = '12px "JetBrains Mono", monospace';
-      ctx.fillText(`H.264 / 1080p / 4096kbps / RTSP HIKVISION OVER ONVIF`, 30, 62);
-
-      // Light scanline effect
-      ctx.fillStyle = 'rgba(255, 255, 255, 0.015)';
-      for (let y = 0; y < 720; y += 4) {
-        ctx.fillRect(0, y, 1280, 1);
-      }
-    }
-
-    if (simCanvas.captureStream) {
-      const stream = simCanvas.captureStream(25);
-      remoteVideo.srcObject = stream;
-      remoteVideo.style.display = 'block';
-      remoteVideo.play().catch(() => {});
-      if (simStreamInterval) clearInterval(simStreamInterval);
-      simStreamInterval = setInterval(drawCctvFrame, 40);
-    }
-  }
-
-  // Simulation test mode button
-  if (btnSimulateOverlay) {
-    btnSimulateOverlay.addEventListener('click', async () => {
-      if (overlayBotStatusText) overlayBotStatusText.textContent = 'Simulating verified CCTV stream (Demo Mode)...';
-      if (overlayBotPulse) overlayBotPulse.style.background = '#38bdf8';
-      startSimulatedCctvStream();
-      setTimeout(() => {
-        if (overlayBotPulse) overlayBotPulse.style.background = '#22c55e';
-        if (overlayBotStatusText) overlayBotStatusText.textContent = '✓ Connected: Hikvision 1080p (Simulated)';
-        setTimeout(() => {
-          standbyOverlay.classList.add('hidden');
-          if (systemStatusText) systemStatusText.textContent = 'LIVE: Hikvision 1080p (Simulated)';
-          if (systemPulse) systemPulse.classList.add('active');
-        }, 800);
-      }, 1000);
     });
   }
 
@@ -787,26 +975,36 @@
         );
 
         if (isHttpProxy) {
-          // Direct HTTP/MJPEG stream — skip displayRtspStream to avoid onerror OFFLINE bug
-          if (fallbackImgFeed) {
-            fallbackImgFeed.onload = null;
-            fallbackImgFeed.onerror = null;
+          let cleanBase = cam.stream_url;
+          if (cleanBase.startsWith('/api/proxy-stream?url=')) {
+            cleanBase = decodeURIComponent(cleanBase.replace('/api/proxy-stream?url=', ''));
+          }
+          cleanBase = cleanBase.replace(/\/video$/, '').replace(/\/shot\.jpg$/, '').replace(/\/$/, '');
+
+          if (typeof window.startSmoothStream === 'function') {
+            window.startSmoothStream(cleanBase, cam.name);
+          } else if (fallbackImgFeed) {
+            fallbackImgFeed.onload = () => {
+              if (fallbackImgFeed.naturalWidth > 0) {
+                onStreamConnected('HTTP MJPEG');
+              }
+            };
+            fallbackImgFeed.onerror = () => {
+              onStreamDisconnected(cam.name);
+            };
             fallbackImgFeed.src = cam.stream_url;
             fallbackImgFeed.style.display = 'block';
           }
-          if (remoteVideo) remoteVideo.style.display = 'none';
-          if (standbyOverlay) standbyOverlay.classList.add('hidden');
-          if (systemStatusText) systemStatusText.textContent = 'LIVE // ' + cam.name;
-          if (systemPulse) systemPulse.className = 'pulse-dot online';
-          if (streamProtocolText) streamProtocolText.textContent = 'HTTP MJPEG';
-          if (osdStatus) { osdStatus.textContent = 'ONLINE'; osdStatus.style.color = 'var(--accent-green)'; }
-          isConnected = true;
-          startFpsMeter();
         } else {
           displayRtspStream(cam.id, cam.name, '/api/cameras/' + cam.id + '/stream.mjpg');
         }
+      } else {
+        if (standbyOverlay) standbyOverlay.classList.remove('hidden');
       }
-    } catch (_e) { console.warn('[Viewer] checkActiveCameraOnLoad error:', _e); }
+    } catch (_e) {
+      console.warn('[Viewer] checkActiveCameraOnLoad error:', _e);
+      if (standbyOverlay) standbyOverlay.classList.remove('hidden');
+    }
   }
 
   function onStreamDisconnected() {
@@ -872,7 +1070,7 @@
   }
 
   // 8. Remote Phone Controls (Viewer -> Phone)
-  btnRemoteTorch.addEventListener('click', () => {
+  btnRemoteTorch?.addEventListener('click', () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     isTorchOn = !isTorchOn;
     ws.send(JSON.stringify({
@@ -881,11 +1079,11 @@
       roomId: activeRoomId,
       state: isTorchOn
     }));
-    btnRemoteTorch.classList.toggle('btn-active', isTorchOn);
+    btnRemoteTorch?.classList.toggle('btn-active', isTorchOn);
     osdTorch.textContent = `🔦 FLASH: ${isTorchOn ? 'ON' : 'OFF'}`;
   });
 
-  btnRemoteFlip.addEventListener('click', () => {
+  btnRemoteFlip?.addEventListener('click', () => {
     if (!ws || ws.readyState !== WebSocket.OPEN) return;
     ws.send(JSON.stringify({
       type: 'command',
@@ -933,7 +1131,7 @@
 
 
   // 10. Instant Snapshot Capture
-  btnSnapshot.addEventListener('click', () => {
+  btnSnapshot?.addEventListener('click', () => {
     captureSnapshot();
   });
 
@@ -984,7 +1182,7 @@
   }
 
   // 11. Video Recording (MediaRecorder API)
-  btnRecord.addEventListener('click', () => {
+  btnRecord?.addEventListener('click', () => {
     if (mediaRecorder && mediaRecorder.state === 'recording') {
       stopRecording();
     } else {
@@ -1067,9 +1265,9 @@
 
 
   // 13. In-Stream QR / Barcode Recognition
-  btnQrScanToggle.addEventListener('click', async () => {
+  btnQrScanToggle?.addEventListener('click', async () => {
     qrScannerActive = !qrScannerActive;
-    btnQrScanToggle.classList.toggle('btn-active', qrScannerActive);
+    btnQrScanToggle?.classList.toggle('btn-active', qrScannerActive);
 
     if (qrScannerActive) {
       startInStreamQrScanner();
@@ -1168,28 +1366,28 @@
     return (chromSim * 0.70) + (rgbSim * 0.30);
   }
 
-  // Advanced Multi-Human Sticky Tracker with Boundary Exit Awareness, Unique IDs & 20s Memory System
+  // Advanced Multi-Human Sticky Tracker with Spatial Seat Anchors, Multi-Frame Confirmation & 60s Memory System
   class AdvancedHumanTracker {
     constructor(options = {}) {
       this.tracks = []; // Array of active tracks
       this.nextId = (options && options.startId) || 1;
       this.totalUniqueCount = 0;
+      this.confirmThreshold = 3; // Must be observed across 3 detection cycles (~250-300ms) to confirm personhood
 
-      // Disappearance grace period:
-      // When a human is undetected for 2500ms (~25 frames), they are marked as disappeared
-      // and moved to the 20-second dormant re-entry memory.
-      this.interiorGraceMs = 2500;
-      this.exitGraceMs = 1000;
+      // Disappearance grace periods:
+      // Seated / interior humans stay tracked for up to 15,000ms (15 seconds) during occlusions, head turns, or shifts
+      this.interiorGraceMs = 15000;
+      this.exitGraceMs = 1200;
 
-      // 20-Second Memory Window:
-      // Remembers disappeared humans for exactly 20,000ms (20 seconds).
-      // If the same human returns within 20s, they reclaim their exact same number!
-      this.reentryMemoryMs = 20000;
+      // 60-Second Re-Entry & Seat Memory Window:
+      // Remembers departed humans for 60 seconds (60,000ms).
+      // Returning to their seat or room reclaims their exact ID with zero count inflation.
+      this.reentryMemoryMs = 60000;
       this.dormantTracks = [];
     }
 
     update(detectedHumans, now = performance.now(), wallClockNow = Date.now(), frameW = 1280, frameH = 720) {
-      // Prune dormant tracks older than 20 seconds
+      // Prune dormant tracks older than reentryMemoryMs
       this.dormantTracks = this.dormantTracks.filter(d => (wallClockNow - (d.departedWallClock || 0)) <= this.reentryMemoryMs);
 
       function getIoU(b1, b2) {
@@ -1240,37 +1438,49 @@
             // Strong IoU overlap → high confidence same person
             affinity = (iou * 2.2) + Math.max(0, 1.0 - normDist) * 0.8 + (areaSim * 0.3);
           } else if (normDist < 1.6) {
-            // Proximity-only match — expanded to 1.6 to reliably track walking/moving humans
+            // Proximity-only match
             affinity = Math.max(0, 1.0 - (normDist / 1.6)) * 0.85 + (areaSim * 0.25);
           }
 
-          // Single human lock: if only 1 active track and 1 detection in frame, lock on firmly!
+          // Spatial Seat Anchor Bonus:
+          // If the person has established a stationary seat position, lock affinity to their chair!
+          if (tr.anchorX !== undefined && tr.anchorY !== undefined) {
+            const distToAnchor = Math.hypot(detCx - tr.anchorX, detCy - tr.anchorY);
+            const anchorRange = Math.max(tr.anchorH || 100, 80) * 0.75;
+            if (distToAnchor < anchorRange) {
+              affinity += Math.max(0, 1.0 - (distToAnchor / anchorRange)) * 0.45;
+            }
+          }
+
+          // Single human lock
           if (this.tracks.length === 1 && detectedHumans.length === 1 && normDist < 2.0) {
             affinity += 0.35;
           }
 
           // Established track lock bonus: lock on firmly to existing confirmed humans
-          if ((tr.totalDetections || 0) > 1) {
+          if ((tr.confirmHits || 0) >= 2 || tr.confirmed) {
             affinity += 0.20;
           }
 
-          // Color consistency gating
+          // Color consistency & dissimilarity gating
           if (det.colorSignature && tr.colorSignature) {
             const cd = Math.hypot(
               det.colorSignature[0] - tr.colorSignature[0],
               det.colorSignature[1] - tr.colorSignature[1],
               det.colorSignature[2] - tr.colorSignature[2]
             );
-            // Only hard reject if clothing is completely different AND boxes don't overlap
-            if (cd > 120 && iou < 0.10 && normDist > 0.80) {
-              continue;
+            // If clothing is significantly different (e.g. contrasting shirts of back-to-back people):
+            // Hard prevent swapping unless IoU is very high (>0.50)
+            if (cd > 85 && iou < 0.25) {
+              continue; // Reject candidate match to avoid ID hijacking between neighbors
+            } else if (cd > 65) {
+              affinity -= 0.30; // Strong penalty for color mismatch
             } else {
-              const colorSim = Math.max(0, 1.0 - (cd / 140));
+              const colorSim = Math.max(0, 1.0 - (cd / 100));
               affinity += colorSim * 0.25;
             }
           }
 
-          // Relaxed affinity gate from 0.35→0.25 to prevent dropping tracks during walking
           if (affinity > 0.25) {
             candidates.push({ tIdx, dIdx, affinity });
           }
@@ -1306,18 +1516,39 @@
           t.vy = t.vy * 0.70 + instantVy * 0.30;
 
           const speed = Math.hypot(t.vx, t.vy);
-          if (speed > 20) {
+          if (speed > 25) {
             t.motionState = 'WALKING';
             t.direction = Math.abs(t.vx) > Math.abs(t.vy) ? (t.vx > 0 ? '→' : '←') : (t.vy > 0 ? '↓' : '↑');
+            t.steadyFrames = 0;
+            // If walking far away from anchor, release seat anchor
+            if (t.anchorX !== undefined && Math.hypot(currentCx - t.anchorX, currentCy - t.anchorY) > 120) {
+              t.isSeated = false;
+            }
           } else {
             t.motionState = 'STEADY';
             t.direction = '';
+            t.steadyFrames = (t.steadyFrames || 0) + 1;
+            // Establish or refine stationary seat anchor
+            if (t.steadyFrames >= 3) {
+              t.isSeated = true;
+              if (t.anchorX === undefined) {
+                t.anchorX = currentCx;
+                t.anchorY = currentCy;
+                t.anchorW = hw;
+                t.anchorH = hh;
+              } else {
+                t.anchorX = t.anchorX * 0.88 + currentCx * 0.12;
+                t.anchorY = t.anchorY * 0.88 + currentCy * 0.12;
+                t.anchorW = t.anchorW * 0.88 + hw * 0.12;
+                t.anchorH = t.anchorH * 0.88 + hh * 0.12;
+              }
+            }
           }
 
-          // Highly responsive position tracking: zero lag on movement
+          // Position smoothing: gentle on seated people to prevent box jumping on fidgeting
           const moveDist = Math.hypot(hx - t.x, hy - t.y);
-          const posAlpha = moveDist > 16 ? 0.95 : (moveDist > 6 ? 0.88 : 0.65);
-          const sizeAlpha = 0.75;
+          const posAlpha = t.isSeated ? 0.72 : (moveDist > 16 ? 0.95 : (moveDist > 6 ? 0.88 : 0.65));
+          const sizeAlpha = 0.72;
           t.x = t.x * (1 - posAlpha) + hx * posAlpha;
           t.y = t.y * (1 - posAlpha) + hy * posAlpha;
           t.width = t.width * (1 - sizeAlpha) + hw * sizeAlpha;
@@ -1329,6 +1560,15 @@
           t.lastUpdateTime = now;
           t.misses = 0;
           t.totalDetections = (t.totalDetections || 0) + 1;
+          t.confirmHits = (t.confirmHits || 0) + 1;
+
+          // Multi-frame track confirmation: only increment totalUniqueCount once verified!
+          if (!t.confirmed && t.confirmHits >= this.confirmThreshold) {
+            t.confirmed = true;
+            this.totalUniqueCount++;
+            console.log(`[HumanTracker] ✅ Human #${t.id} verified (Unique Total: ${this.totalUniqueCount})`);
+            addLogEvent('human', `✅ Human #${t.id} verified`, `Stable multi-frame lock • Unique Count: ${this.totalUniqueCount}`);
+          }
 
           // Continuous appearance refinement: accumulate multi-zone color & Re-ID prototypes
           if (det.colorSignature) t.colorSignature = det.colorSignature;
@@ -1360,18 +1600,18 @@
         }
       }
 
-      // 2. Unmatched detections -> First check 20-Second Re-Entry Memory for returning past human!
+      // 2. Unmatched detections -> First check 60-Second Re-Entry Memory for returning human!
       for (let dIdx = 0; dIdx < detectedHumans.length; dIdx++) {
         if (!matchedDetIndices.has(dIdx)) {
           const det = detectedHumans[dIdx];
           const [hx, hy, hw, hh] = det.bbox;
 
           const detArea = hw * hh;
-          const detAspect = hw / Math.max(1, hh);
           const detCx = hx + hw / 2;
           const detCy = hy + hh / 2;
 
-          // Reject if this detection overlaps ANY active track (prevents ghost doubles/torsos on the same human)
+          // Reject if this detection has high spatial overlap with ANY active track (duplicate box on same human)
+          // CRITICAL: NEVER reject based solely on center distance, as people sitting back-to-back have close centers!
           let overlapsActiveTrack = false;
           for (const tr of this.tracks) {
             const trIoU = getIoU(
@@ -1384,12 +1624,8 @@
             );
             const minArea = Math.min(tr.width * tr.height, detArea);
             const ioMin = minArea > 0 ? trInter / minArea : 0;
-            const trCx = tr.x + tr.width / 2;
-            const trCy = tr.y + tr.height / 2;
-            const dist = Math.hypot(detCx - trCx, detCy - trCy);
-            const refDim = Math.min(Math.max(tr.width, tr.height), Math.max(hw, hh), 120);
 
-            if (trIoU > 0.22 || ioMin > 0.45 || (dist / refDim) < 0.45) {
+            if (trIoU > 0.48 || (ioMin > 0.75 && trIoU > 0.20)) {
               overlapsActiveTrack = true;
               break;
             }
@@ -1402,12 +1638,11 @@
           let bestDormantIdx = -1;
           let bestDormantScore = 0;
 
-          // ── Search 20-Second Memory for returning human ───────────────────
+          // ── Search 60-Second Memory for returning human ───────────────────
           for (let k = 0; k < this.dormantTracks.length; k++) {
             const d = this.dormantTracks[k];
             const timeAwaySec = (wallClockNow - (d.departedWallClock || 0)) / 1000;
-            // Internal window: strictly within 20 seconds (+2s network grace to never drop an on-time return)
-            if (timeAwaySec > 22.0) continue;
+            if (timeAwaySec > (this.reentryMemoryMs / 1000) + 2.0) continue;
 
             let score = 0;
             let weights = 0;
@@ -1465,24 +1700,26 @@
               weights += 0.15;
             }
 
-            // 5. Aspect Ratio & Silhouette Similarity
-            const detAspect = hw / Math.max(1, hh);
-            const dAspect = d.width / Math.max(1, d.height);
-            const aspectSim = Math.min(detAspect, dAspect) / Math.max(detAspect, dAspect || 1);
-            score += aspectSim * 0.10;
-            weights += 0.10;
+            // 5. Spatial Seat Anchor Proximity: Reclaim seat ID if returning to the same seat!
+            if (d.anchorX !== undefined && d.anchorY !== undefined) {
+              const distToAnchor = Math.hypot(detCx - d.anchorX, detCy - d.anchorY);
+              const anchorRef = Math.max(d.anchorH || 100, 80);
+              if (distToAnchor < anchorRef * 0.85) {
+                const seatScore = Math.max(0, 1.0 - (distToAnchor / (anchorRef * 0.85)));
+                score += seatScore * 0.45;
+                weights += 0.45;
+              }
+            }
 
-            // 6. Recency Affinity Factor: humans returning within 20s have high probability
-            const recencyFactor = Math.max(0, 1.0 - (timeAwaySec / 22.0)) * 0.15;
+            // 6. Recency Affinity Factor
+            const recencyFactor = Math.max(0, 1.0 - (timeAwaySec / (this.reentryMemoryMs / 1000))) * 0.15;
             score += recencyFactor;
             weights += 0.10;
 
             const finalSim = weights > 0 ? (score / weights) : 0.50;
 
-            // Buffed matching threshold:
-            // Single candidate in 20s memory: match immediately if similarity >= 0.20!
-            // Multiple candidates in memory: match best candidate if similarity >= 0.28!
-            const matchThreshold = this.dormantTracks.length === 1 ? 0.20 : 0.28;
+            // Match threshold:
+            const matchThreshold = this.dormantTracks.length === 1 ? 0.20 : 0.26;
             if (finalSim > bestDormantScore && finalSim >= matchThreshold) {
               bestDormantScore = finalSim;
               bestDormantIdx = k;
@@ -1490,13 +1727,15 @@
           }
 
           if (bestDormantIdx >= 0) {
-            // Re-activate same human number within 20 seconds!
+            // Re-activate same human number within 60 seconds!
             const d = this.dormantTracks.splice(bestDormantIdx, 1)[0];
             const timeAwaySec = Math.round((wallClockNow - (d.departedWallClock || wallClockNow)) / 1000);
 
             const resurrected = {
               ...d,
               id: d.id, // EXACT SAME HUMAN NUMBER!
+              confirmed: true,
+              confirmHits: Math.max(3, (d.confirmHits || 3)),
               x: hx,
               y: hy,
               width: hw,
@@ -1517,6 +1756,12 @@
               accumulatedDwellMs: (d.accumulatedDwellMs || 0) + (d.dwellMs || 0),
               firstSeenWallClock: wallClockNow - (d.accumulatedDwellMs || 0),
               entityClass: 'person',
+              anchorX: d.anchorX !== undefined ? d.anchorX : detCx,
+              anchorY: d.anchorY !== undefined ? d.anchorY : detCy,
+              anchorW: d.anchorW || hw,
+              anchorH: d.anchorH || hh,
+              isSeated: d.isSeated || false,
+              steadyFrames: 3,
               embeddingBank: d.embeddingBank || (d.reidFeatures ? [d.reidFeatures] : []),
               colorBank: d.colorBank || (d.colorSignature ? [d.colorSignature] : [])
             };
@@ -1529,17 +1774,18 @@
             this.tracks.push(resurrected);
             matchedDetIndices.add(dIdx);
 
-            console.log(`[MemorySystem] 🔄 Human #${d.id} returned after ${timeAwaySec}s (within 20s window) -> RECLAIMED SAME ID #${d.id} (Match: ${Math.round(bestDormantScore * 100)}%)`);
-            addLogEvent('human', `🔄 Human #${d.id} returned (${timeAwaySec}s away)`, `Re-identified within 20s window • Retained ID #${d.id} (Visit #${resurrected.visitCount}, Match: ${Math.round(bestDormantScore * 100)}%)`);
+            console.log(`[MemorySystem] 🔄 Human #${d.id} returned after ${timeAwaySec}s -> RECLAIMED SAME ID #${d.id} (Match: ${Math.round(bestDormantScore * 100)}%)`);
+            addLogEvent('human', `🔄 Human #${d.id} returned (${timeAwaySec}s away)`, `Re-identified within 60s window • Retained ID #${d.id} (Visit #${resurrected.visitCount}, Match: ${Math.round(bestDormantScore * 100)}%)`);
             continue;
           }
 
-          // Not in 20-second memory: assign brand new Human ID number
+          // Not in 60-second memory: assign tentative Human ID (counter only increments after multi-frame confirmation)
           const newId = this.nextId++;
-          this.totalUniqueCount++;
 
           const newTrack = {
             id: newId,
+            confirmed: false,
+            confirmHits: 1,
             x: hx,
             y: hy,
             width: hw,
@@ -1555,6 +1801,12 @@
             lastUpdateTime: now,
             misses: 0,
             totalDetections: 1,
+            steadyFrames: 1,
+            isSeated: false,
+            anchorX: detCx,
+            anchorY: detCy,
+            anchorW: hw,
+            anchorH: hh,
             colorSignature: det.colorSignature || (det.colorProfile && det.colorProfile.torso) || null,
             colorProfile: det.colorProfile || null,
             lowerColor: det.lowerColor || (det.colorProfile && det.colorProfile.lower) || null,
@@ -1571,7 +1823,7 @@
         }
       }
 
-      // Track-to-Track Deduplication: Ensure strictly ONE track per physical human
+      // Track-to-Track Deduplication: Merge only genuine duplicate boxes on the same human
       for (let i = 0; i < this.tracks.length; i++) {
         for (let j = this.tracks.length - 1; j > i; j--) {
           const t1 = this.tracks[i];
@@ -1586,14 +1838,21 @@
           );
           const minArea = Math.min(t1.width * t1.height, t2.width * t2.height);
           const ioMin = minArea > 0 ? trInter / minArea : 0;
-          const t1Cx = t1.x + t1.width / 2;
-          const t1Cy = t1.y + t1.height / 2;
-          const t2Cx = t2.x + t2.width / 2;
-          const t2Cy = t2.y + t2.height / 2;
-          const dist = Math.hypot(t1Cx - t2Cx, t1Cy - t2Cy);
-          const refDim = Math.min(Math.max(t1.width, t1.height), Math.max(t2.width, t2.height), 120);
 
-          if (trIoU > 0.22 || ioMin > 0.45 || (dist / refDim) < 0.45) {
+          // Check clothing difference: distinct clothing = distinct people!
+          let distinctColors = false;
+          if (t1.colorSignature && t2.colorSignature) {
+            const cd = Math.hypot(
+              t1.colorSignature[0] - t2.colorSignature[0],
+              t1.colorSignature[1] - t2.colorSignature[1],
+              t1.colorSignature[2] - t2.colorSignature[2]
+            );
+            if (cd > 70) distinctColors = true;
+          }
+
+          // Merge ONLY on genuine physical bounding box overlap (high IoU or high containment)
+          // CRITICAL: NEVER merge based on center distance, which would destroy back-to-back people!
+          if (!distinctColors && (trIoU > 0.50 || (ioMin > 0.78 && trIoU > 0.22))) {
             // Keep the more established track
             if ((t2.totalDetections || 0) > (t1.totalDetections || 0) && t2.misses <= t1.misses) {
               this.tracks[i] = t2;
@@ -1614,6 +1873,11 @@
 
         if (!isMatched) {
           t.misses++;
+          // Unconfirmed transient track missed: discard quietly without incrementing counter
+          if (!t.confirmed && t.misses >= 3) {
+            this.tracks.splice(i, 1);
+            continue;
+          }
         }
 
         const elapsedSinceSeen = wallClockNow - (t.lastSeenWallClock || wallClockNow);
@@ -1626,29 +1890,37 @@
         const allowedGrace = isAtBoundary ? this.exitGraceMs : this.interiorGraceMs;
 
         if (elapsedSinceSeen > allowedGrace) {
-          // Human departed / disappeared from camera view -> Save to 20s Re-Entry Memory!
-          t.departedTime = now;
-          t.departedWallClock = t.lastSeenWallClock || wallClockNow;
-          t.dwellMs = (t.lastSeenWallClock || wallClockNow) - t.firstSeenWallClock;
-          t.accumulatedDwellMs = (t.accumulatedDwellMs || 0) + t.dwellMs;
-          t.exitBbox = { x: t.x, y: t.y, w: t.width, h: t.height };
-          t.isAtBoundary = isAtBoundary;
-          
-          // Replace any older entry with same id
-          this.dormantTracks = this.dormantTracks.filter(d => d.id !== t.id);
-          this.dormantTracks.push(t);
+          // Only save confirmed humans to dormant re-entry memory!
+          if (t.confirmed) {
+            t.departedTime = now;
+            t.departedWallClock = t.lastSeenWallClock || wallClockNow;
+            t.dwellMs = (t.lastSeenWallClock || wallClockNow) - t.firstSeenWallClock;
+            t.accumulatedDwellMs = (t.accumulatedDwellMs || 0) + t.dwellMs;
+            t.exitBbox = { x: t.x, y: t.y, w: t.width, h: t.height };
+            t.isAtBoundary = isAtBoundary;
+            
+            // Replace any older entry with same id
+            this.dormantTracks = this.dormantTracks.filter(d => d.id !== t.id);
+            this.dormantTracks.push(t);
 
-          console.log(`[MemorySystem] 👤 Human #${t.id} disappeared from view. Armed 20s memory.`);
-          addLogEvent('human', `👤 Human #${t.id} left camera`, `Disappeared at ${new Date(wallClockNow).toLocaleTimeString()} • 20s Re-Entry Memory active`);
+            console.log(`[MemorySystem] 👤 Human #${t.id} left camera view. Armed 60s memory.`);
+            addLogEvent('human', `👤 Human #${t.id} left camera`, `Disappeared at ${new Date(wallClockNow).toLocaleTimeString()} • 60s Re-Entry Memory active`);
+          }
 
           this.tracks.splice(i, 1);
           continue;
         }
 
-        // Forward project walking track if temporarily occluded or missed
-        if (!isMatched && t.misses < 10) {
-          t.x += t.vx * 0.035;
-          t.y += t.vy * 0.035;
+        // Occlusion handling:
+        // If seated, keep pinned to seat anchor instead of drifting!
+        if (!isMatched) {
+          if (t.isSeated && t.anchorX !== undefined) {
+            t.x = t.anchorX - t.width / 2;
+            t.y = t.anchorY - t.height / 2;
+          } else if (t.misses < 10) {
+            t.x += t.vx * 0.035;
+            t.y += t.vy * 0.035;
+          }
         }
 
         // Live continuous dwell timer
@@ -1667,7 +1939,13 @@
 
     getLiveTracks(wallClockNow = Date.now()) {
       return this.tracks
-        .filter(t => (t.misses || 0) <= 12) // Keep box active & stable for up to 12 missed cycles (~1.2s) without blinking!
+        .filter(t => {
+          // Only display confirmed tracks or candidate tracks with at least 2 consecutive detections
+          if (!t.confirmed && (t.confirmHits || 0) < 2) return false;
+          // Seated tracks can stay visible during occlusions up to 25 misses (~2.5s) without flickering
+          const maxMisses = t.isSeated ? 25 : 12;
+          return (t.misses || 0) <= maxMisses;
+        })
         .map(t => {
           const dwellMs = wallClockNow - t.firstSeenWallClock;
           return {
@@ -1681,6 +1959,13 @@
     clear() {
       this.tracks = [];
       this.dormantTracks = [];
+    }
+
+    resetCounts() {
+      this.tracks = [];
+      this.dormantTracks = [];
+      this.nextId = 1;
+      this.totalUniqueCount = 0;
     }
   }
 
@@ -1703,26 +1988,22 @@
 
     scanFrameCount++;
 
-    // ─── Score floor: fixed at 0.38 regardless of the user slider ───────────────────
-    // The slider (confidenceThreshold) used to bleed into this value, causing
-    // slider > 38% to raise the floor above 0.38 and miss real people.
-    // Now: model always runs at 0.38. The slider only affects track retention
-    // downstream (how long an unmatched track survives before being retired).
-    const scanScoreFloor = 0.40;
+    // ─── Score floor: 0.25 for reliable detection of seated / classroom humans ────
+    const scanScoreFloor = 0.25;
 
     const scaleX = sW / (aiW || sW || 1);
     const scaleY = sH / (aiH || sH || 1);
     const canvasIsReady = (c) => c && c.width > 0 && c.height > 0;
 
     // ─── Human Entity & Geometry validator (STRICTLY HUMANS ONLY) ───
-    const minHeightFrac = 0.05;   // At least 5% of source frame height
+    const minHeightFrac = 0.03;   // Allow seated people behind desks
     const frameArea = sW * sH;
     function isValidEntityBox(bx, by, bw, bh, cls) {
       // STRICT: Reject any entity that is not a person/human
       if (cls !== 'person' && cls !== 'human') return false;
-      if (bw < 14 || bh < 24) return false;        // Too tiny
-      if ((bw * bh) < frameArea * 0.002) return false;  // Hairline sliver / noise
-      if (bw > bh * 1.8) return false; // Aberrant horizontal bar (desks, sofas, tables)
+      if (bw < 12 || bh < 20) return false;        // Too tiny
+      if ((bw * bh) < frameArea * 0.001) return false;  // Hairline sliver / noise
+      if (bw > bh * 2.2) return false; // Aberrant horizontal bar (desks, sofas, tables) - allow seated people
       if (bh > bw * 8.5) return false; // Aberrant vertical sliver (poles, wires)
       return true;
     }
@@ -1843,14 +2124,13 @@
 
         const iouVal = iou(item.bbox, kept.bbox);
         const ioMinVal = ioMin(item.bbox, kept.bbox);
-        const dist = Math.hypot(icx - kcx, icy - kcy);
-        const refDim = Math.min(Math.max(iw, ih), Math.max(kw, kh));
 
-        // Duplicate person if:
-        // 1. Moderate/High IoU overlap (>0.32)
-        // 2. High Containment (>0.45, e.g. torso inside full body or overlapping boxes on same seated person)
-        // 3. Close centers (<0.40 of person dimension)
-        if (iouVal > 0.32 || ioMinVal > 0.45 || (dist / refDim) < 0.40) {
+        // Genuine duplicate detection (e.g. multi-scale detector proposing double boxes for the same human):
+        // 1. Significant IoU overlap (>0.48)
+        // 2. High Containment where one box is mostly nested inside the other (>0.75 containment AND >0.15 IoU)
+        // CRITICAL: NEVER suppress solely on center distance, as individuals sitting back-to-back
+        // or side-by-side naturally have close center coordinates without being the same person!
+        if (iouVal > 0.48 || (ioMinVal > 0.75 && iouVal > 0.15)) {
           dup = true;
           break;
         }
@@ -1954,43 +2234,12 @@
     };
   }
 
-  // Draw futuristic neon bounding box with Role State, Global ID, Dwell Timer, and Motion State
+  // Draw clean solid monochrome bounding box with Role State, Global ID, Dwell Timer, and Motion State
   function drawHumanTargetBox(ctx, x, y, width, height, human) {
     const role = human.roleType || 'UNKNOWN';
     const entityType = (human.entityClass || human.class || 'person').toUpperCase();
-    let themeColor = '#00ff88'; // Default neon green
-    let tintColor = 'rgba(0, 255, 136, 0.08)';
-
-    if (human.reentered) {
-      themeColor = '#00ff88'; // Bright Neon Green for 20s Memory Re-entry
-      tintColor = 'rgba(0, 255, 136, 0.15)';
-    } else if (entityType !== 'PERSON') {
-      themeColor = '#38bdf8'; // Electric Cyan for other detected entities (phone, laptop, bottle, etc.)
-      tintColor = 'rgba(56, 189, 248, 0.12)';
-    } else if (role === 'STAFF') {
-      themeColor = '#00ff88'; // Green for Verified Staff
-      tintColor = 'rgba(0, 255, 136, 0.12)';
-    } else if (role === 'CUSTOMER') {
-      themeColor = '#38bdf8'; // Sky Blue for Customers
-      tintColor = 'rgba(56, 189, 248, 0.09)';
-    } else if (role === 'VISITOR') {
-      themeColor = '#c084fc'; // Purple for Visitors
-      tintColor = 'rgba(192, 132, 252, 0.09)';
-    } else if (role === 'DELIVERY') {
-      themeColor = '#fb923c'; // Orange for Delivery
-      tintColor = 'rgba(251, 146, 60, 0.09)';
-    } else if (role === 'SECURITY') {
-      themeColor = '#f87171'; // Red for Security
-      tintColor = 'rgba(248, 113, 113, 0.12)';
-    } else {
-      themeColor = '#00ff88'; // Neon green for Person
-      tintColor = 'rgba(0, 255, 136, 0.08)';
-    }
-
-    if (human.isRecognized) {
-      themeColor = '#38bdf8'; // Electric Cyan for Recognized Returning Human
-      tintColor = 'rgba(56, 189, 248, 0.16)';
-    }
+    const themeColor = '#ffffff';
+    const tintColor = 'rgba(255, 255, 255, 0.04)';
 
     ctx.save();
 
@@ -1998,17 +2247,16 @@
     ctx.fillStyle = tintColor;
     ctx.fillRect(x, y, width, height);
 
-    // 2. Glowing box boundary
-    ctx.shadowColor = themeColor;
-    ctx.shadowBlur = human.isRecognized ? 16 : 10;
+    // 2. Solid box boundary
+    ctx.shadowBlur = 0;
     ctx.strokeStyle = themeColor;
-    ctx.lineWidth = human.isRecognized ? 2.8 : 2.4;
+    ctx.lineWidth = 1.8;
     ctx.strokeRect(x, y, width, height);
 
     // 3. Cybernetic targeting corner brackets (4 corners)
     const bracketLen = Math.max(10, Math.min(26, width * 0.20, height * 0.20));
-    ctx.lineWidth = 3.8;
-    ctx.shadowBlur = 14;
+    ctx.lineWidth = 2.4;
+    ctx.shadowBlur = 0;
 
     // Top-Left corner
     ctx.beginPath();
@@ -2211,8 +2459,12 @@
     }
 
     const isVideoMode = remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none';
-    const sW = isVideoMode ? remoteVideo.videoWidth : (fallbackImgFeed?.naturalWidth || 1280);
-    const sH = isVideoMode ? remoteVideo.videoHeight : (fallbackImgFeed?.naturalHeight || 720);
+    const rawSW = isVideoMode ? remoteVideo.videoWidth : (fallbackImgFeed?.naturalWidth || 1280);
+    const rawSH = isVideoMode ? remoteVideo.videoHeight : (fallbackImgFeed?.naturalHeight || 720);
+    const rot = (currentRotation || 0) % 360;
+    const swapDims = (rot === 90 || rot === 270);
+    const sW = swapDims ? rawSH : rawSW;
+    const sH = swapDims ? rawSW : rawSH;
 
     const ctx = motionCanvas.getContext('2d');
     ctx.clearRect(0, 0, motionCanvas.width, motionCanvas.height);
@@ -2293,32 +2545,50 @@
     const wallClockNow = Date.now();
 
     try {
-      const sW = isVideoMode ? remoteVideo.videoWidth : fallbackImgFeed.naturalWidth;
-      const sH = isVideoMode ? remoteVideo.videoHeight : fallbackImgFeed.naturalHeight;
+      const rawSW = isVideoMode ? remoteVideo.videoWidth : fallbackImgFeed.naturalWidth;
+      const rawSH = isVideoMode ? remoteVideo.videoHeight : fallbackImgFeed.naturalHeight;
 
-      if (sW > 0 && sH > 0) {
-        // High-speed downscaled AI resolution (Capped at 480px for instant inference and zero lag)
-        const maxAiDim = 480;
-        let aiW = sW;
-        let aiH = sH;
-        if (sW > maxAiDim || sH > maxAiDim) {
-          if (sW >= sH) {
+      if (rawSW > 0 && rawSH > 0) {
+        const rot = (currentRotation || 0) % 360;
+        const swapDims = (rot === 90 || rot === 270);
+        const sW = swapDims ? rawSH : rawSW;
+        const sH = swapDims ? rawSW : rawSH;
+
+        // High-speed downscaled AI resolution (Capped at 640px for high-accuracy human detection)
+        const maxAiDim = 640;
+        let aiW = rawSW;
+        let aiH = rawSH;
+        if (rawSW > maxAiDim || rawSH > maxAiDim) {
+          if (rawSW >= rawSH) {
             aiW = maxAiDim;
-            aiH = Math.round((sH / sW) * maxAiDim);
+            aiH = Math.round((rawSH / rawSW) * maxAiDim);
           } else {
             aiH = maxAiDim;
-            aiW = Math.round((sW / sH) * maxAiDim);
+            aiW = Math.round((rawSW / rawSH) * maxAiDim);
           }
         }
 
-        if (aiBufferCanvas.width !== aiW || aiBufferCanvas.height !== aiH) {
-          aiBufferCanvas.width = aiW;
-          aiBufferCanvas.height = aiH;
+        const finalAiW = swapDims ? aiH : aiW;
+        const finalAiH = swapDims ? aiW : aiH;
+
+        if (aiBufferCanvas.width !== finalAiW || aiBufferCanvas.height !== finalAiH) {
+          aiBufferCanvas.width = finalAiW;
+          aiBufferCanvas.height = finalAiH;
         }
-        aiBufferCtx.drawImage(sourceEl, 0, 0, aiW, aiH);
+
+        aiBufferCtx.save();
+        aiBufferCtx.clearRect(0, 0, finalAiW, finalAiH);
+        if (rot === 0) {
+          aiBufferCtx.drawImage(sourceEl, 0, 0, aiW, aiH);
+        } else {
+          aiBufferCtx.translate(finalAiW / 2, finalAiH / 2);
+          aiBufferCtx.rotate((rot * Math.PI) / 180);
+          aiBufferCtx.drawImage(sourceEl, -aiW / 2, -aiH / 2, aiW, aiH);
+        }
+        aiBufferCtx.restore();
 
         // Execute multi-scale scan for both close & distant humans
-        const instantHumans = await scanHumansMultiScale(aiW, aiH, sW, sH, humanDetectionConfidence);
+        const instantHumans = await scanHumansMultiScale(finalAiW, finalAiH, sW, sH, humanDetectionConfidence);
 
         // Attach multi-zone body color signatures for 20s re-entry recognition
         if (instantHumans && instantHumans.length > 0) {
@@ -2435,6 +2705,19 @@
     });
   }
 
+  // Reset Unique Track Counter Button
+  if (btnResetTrackCount) {
+    btnResetTrackCount.addEventListener('click', () => {
+      if (humanTracker) {
+        humanTracker.resetCounts();
+      }
+      if (telemetryTotalTracked) {
+        telemetryTotalTracked.textContent = '0';
+      }
+      addLogEvent('system', '🔄 Person counter reset', 'All track IDs and cumulative count reset to 0');
+    });
+  }
+
   // Globally accessible helper to start AI Detection Bot
   window.startAiBot = async function() {
     if (!humanBotActive && btnHumanBotToggle) {
@@ -2514,23 +2797,34 @@
   }
 
   // 15. Standby / Pair Dialog Toggle
-  btnShowQr.addEventListener('click', () => {
-    standbyOverlay.classList.toggle('hidden');
-  });
+  if (btnShowQr) {
+    btnShowQr.addEventListener('click', () => {
+      if (standbyOverlay) standbyOverlay.classList.toggle('hidden');
+    });
+  }
+
+  const btnHeaderConnect = document.getElementById('btnHeaderConnectCam');
+  if (btnHeaderConnect) {
+    btnHeaderConnect.addEventListener('click', () => {
+      if (standbyOverlay) standbyOverlay.classList.remove('hidden');
+    });
+  }
 
   const btnCloseStandby = document.getElementById('btnCloseStandby');
   if (btnCloseStandby) {
     btnCloseStandby.addEventListener('click', (e) => {
       e.stopPropagation();
-      standbyOverlay.classList.add('hidden');
+      if (standbyOverlay) standbyOverlay.classList.add('hidden');
     });
   }
 
-  standbyOverlay.addEventListener('click', (e) => {
-    if (e.target === standbyOverlay) {
-      standbyOverlay.classList.add('hidden');
-    }
-  });
+  if (standbyOverlay) {
+    standbyOverlay.addEventListener('click', (e) => {
+      if (e.target === standbyOverlay) {
+        standbyOverlay.classList.add('hidden');
+      }
+    });
+  }
 
   // 16. Fullscreen Toggle
   btnFullscreen.addEventListener('click', () => {
@@ -3959,43 +4253,31 @@
     ctx.rect(pad.left - 2, pad.top - 5, pw + 4, ph + 10);
     ctx.clip();
 
-    // Series 1: Total People (with gradient fill)
+    // Series 1: Total People (Solid White)
     if (chkSeriesTotal && chkSeriesTotal.checked && totalCoords.length > 0) {
-      const totalGrad = ctx.createLinearGradient(0, pad.top, 0, pad.top + ph);
-      totalGrad.addColorStop(0, 'rgba(56, 189, 248, 0.28)');
-      totalGrad.addColorStop(0.7, 'rgba(56, 189, 248, 0.05)');
-      totalGrad.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+      drawSmoothSeries(ctx, totalCoords, '#ffffff', null, 2.2);
 
-      drawSmoothSeries(ctx, totalCoords, '#38bdf8', totalGrad, 2.5);
-
-      // Pulse Radar indicator at rightmost point
+      // Radar indicator at rightmost point
       const lastCoord = totalCoords[totalCoords.length - 1];
       if (lastCoord) {
-        const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
         ctx.save();
-        ctx.beginPath();
-        ctx.arc(lastCoord.x, lastCoord.y, 4 + pulse * 6, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(56, 189, 248, ${0.45 - pulse * 0.35})`;
-        ctx.fill();
-
         ctx.beginPath();
         ctx.arc(lastCoord.x, lastCoord.y, 3.5, 0, Math.PI * 2);
         ctx.fillStyle = '#ffffff';
-        ctx.shadowColor = '#38bdf8';
-        ctx.shadowBlur = 8;
+        ctx.shadowBlur = 0;
         ctx.fill();
         ctx.restore();
       }
     }
 
-    // Series 2: Enrolled Staff (Green)
+    // Series 2: Enrolled Staff (Solid Muted Gray)
     if (chkSeriesStaff && chkSeriesStaff.checked && staffCoords.length > 0) {
-      drawSmoothSeries(ctx, staffCoords, '#22c55e', null, 1.8);
+      drawSmoothSeries(ctx, staffCoords, '#a1a1aa', null, 1.6);
     }
 
-    // Series 3: Unknown / Visitors (Purple)
+    // Series 3: Unknown / Visitors (Solid Dim Gray)
     if (chkSeriesVisitors && chkSeriesVisitors.checked && visitorCoords.length > 0) {
-      drawSmoothSeries(ctx, visitorCoords, '#a855f7', null, 1.8);
+      drawSmoothSeries(ctx, visitorCoords, '#71717a', null, 1.6);
     }
 
     // 4. Interactive Hover Crosshair & Dots
@@ -4112,11 +4394,7 @@
       coords.push({ x, y, bottomY: sH });
     }
 
-    const grad = sCtx.createLinearGradient(0, 0, 0, sH);
-    grad.addColorStop(0, 'rgba(34, 197, 94, 0.4)');
-    grad.addColorStop(1, 'rgba(34, 197, 94, 0.0)');
-
-    drawSmoothSeries(sCtx, coords, '#22c55e', grad, 1.8);
+    drawSmoothSeries(sCtx, coords, '#ffffff', null, 1.8);
   }
 
   // Animation Loop (60 FPS smooth rendering)
@@ -4778,6 +5056,7 @@
   setupNetworkAndQR();
   initWebSocket();
   checkActiveCameraOnLoad();
+  refreshCameraSwitcher();
   fetchLivePeopleSummary();
   setupGraphControls();
   setupPopularTimesControls();

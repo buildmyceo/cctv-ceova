@@ -87,7 +87,8 @@ class YoloBridge {
     const serviceScript = path.join(__dirname, '..', 'yolo_service.py');
 
     try {
-      const pythonCmd = process.platform === 'win32' ? 'python' : 'python3';
+      const { resolvePythonBinary } = require('../../services/runtime_resolver');
+      const pythonCmd = resolvePythonBinary(path.join(__dirname, '..', '..'));
       this.pythonProcess = spawn(pythonCmd, [serviceScript], {
         cwd: path.join(__dirname, '..', '..'),
         stdio: ['ignore', 'pipe', 'pipe'],

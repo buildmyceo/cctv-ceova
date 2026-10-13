@@ -2,74 +2,110 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Ceova Vision AI // Phone CCTV Surveillance Hub</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Ceova Vision AI // Autonomous CCTV Surveillance Hub</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="css/style.css?v=2.9">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,100..900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css?v=3.3">
   <link rel="stylesheet" href="css/ceova_ecosystem.css">
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎥</text></svg>">
+  <script>
+    (function() {
+      if (!window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+        document.documentElement.classList.add('intro');
+        setTimeout(function() {
+          document.documentElement.classList.remove('intro', 'intro-play');
+        }, 5000);
+      }
+    })();
+  </script>
 </head>
 <body>
-  <!-- Ambient Background Lighting Mesh (Sky Blue & Grass Green) -->
-  <div class="ambient-glow glow-sky"></div>
-  <div class="ambient-glow glow-grass"></div>
+  <!-- Ambient Cosmic & Planetary Sky Artwork (Silent Looping Background) -->
+  <div class="sky-frame" aria-hidden="true">
+    <video class="sky-video" autoplay muted loop playsinline preload="auto"
+           poster="assets/images/sky.png">
+      <source src="assets/video/sky.mp4" type="video/mp4">
+      <source src="https://d2ol7oe51mr4n9.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/4b73c700-3112-4c07-bd48-0af2893dff7c.mp4" type="video/mp4">
+    </video>
+    <div class="sky-veil"></div>
+  </div>
 
   <!-- Top Navigation Bar -->
   <header class="app-header">
     <div class="brand-section">
-      <div class="brand-logo">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+      <div class="brand-logo orbit-logo-wrap" title="Ceova Vision Orbit System">
+        <svg class="brand-orbit-svg" viewBox="0 0 26.9 16.6" fill="none">
+          <ellipse cx="13.25" cy="8.4" rx="13.2" ry="2.9" transform="rotate(-25 13.25 8.4)" stroke="currentColor" stroke-width="1.25"/>
+          <circle cx="13.25" cy="8.4" r="8.8" fill="#000"/>
+          <circle cx="13.25" cy="8.4" r="8.1" fill="currentColor"/>
+          <ellipse cx="13.25" cy="8.4" rx="13.2" ry="2.9" transform="rotate(-25 13.25 8.4)" stroke="#000" stroke-width="0.9" stroke-dasharray="28.2 28.2"/>
+          <ellipse cx="13.25" cy="8.4" rx="13.2" ry="2.9" transform="rotate(-25 13.25 8.4)" stroke="currentColor" stroke-width="1.25" stroke-dasharray="28.2 28.2"/>
         </svg>
       </div>
       <div class="brand-text">
-        <h1>CEOVA VISION <span class="version-tag">CCTV v2.5</span></h1>
-        <p>AUTONOMOUS CCTV SURVEILLANCE & STREAMING ENGINE</p>
+        <h1>CEOVA VISION <span class="version-tag">ORBIT v2.5</span></h1>
+        <p>AUTONOMOUS CCTV SURVEILLANCE &amp; NEURAL STREAMING ENGINE</p>
       </div>
     </div>
 
     <div class="header-stats">
-      <a href="connect.html" class="stat-pill" style="text-decoration:none; color:var(--accent-sky); border-color:rgba(56, 189, 248, 0.4); font-weight:700;">
-        <span>📡 CONNECT CCTV CAMERA (AUTO BOT)</span>
-      </a>
+      <button type="button" id="btnHeaderConnectCam" class="btn ghost" style="padding:7px 14px; font-size:0.78rem; display:inline-flex; align-items:center; gap:6px; cursor:pointer;">
+        <span>📡 CONNECT CCTV</span>
+      </button>
       <div class="stat-pill" id="systemStatusPill">
         <span class="pulse-dot" id="systemPulse"></span>
         <span id="systemStatusText">STANDBY / WAITING FOR CAMERA</span>
       </div>
       <div class="stat-pill" id="protocolPill">
-        <span>MODE: <strong id="streamProtocolText" style="color:var(--accent-cyan)">WEBRTC P2P</strong></span>
+        <span>MODE: <strong id="streamProtocolText" style="color:#ffffff;">WEBRTC P2P</strong></span>
       </div>
       <div class="live-clock" id="liveClock">00:00:00 UTC</div>
+      <button class="btn solid" id="btnTabPdfReportHeader" title="Download Full Day or Custom Time Window Analytics PDF Report" style="padding:7px 16px; font-size:0.78rem; display:inline-flex; align-items:center; gap:6px; cursor:pointer; background:#ffffff; color:#000000; border:1px solid #ffffff; font-weight:700; border-radius:10px;">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width:13px; height:13px; stroke-width:2.2;"><path stroke-linecap="round" stroke-linejoin="round" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+        <span>PDF Report</span>
+      </button>
     </div>
   </header>
 
-  <!-- Live Role Recognition Summary Bar -->
-  <div class="role-summary-bar">
-    <div class="role-pill pill-staff">
-      <div class="role-pill-header">
-        <span class="role-title">STAFF</span>
-        <span class="role-badge-count" id="summaryStaffCount">0</span>
-      </div>
-      <div class="role-pill-sub" id="summaryStaffMembers">None currently detected</div>
-    </div>
-
-    <div class="role-pill pill-unknown">
-      <div class="role-pill-header">
-        <span class="role-title">UNKNOWN</span>
-        <span class="role-badge-count" id="summaryUnknownCount">0</span>
-      </div>
-      <div class="role-pill-sub">Unverified Persons</div>
-    </div>
-
-    <div class="role-actions" style="margin-left:auto; display:flex; gap:8px; align-items:center;">
-      <button class="btn btn-secondary" id="btnOpenStaffModal" title="Open Staff & Body Memory Console" style="font-size:0.78rem; padding:6px 12px; display:flex; align-items:center; gap:6px;">
-        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width:14px; height:14px;">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+  <!-- Sub-Header Bar: Eyebrow Pill + Live Role Summary Bar -->
+  <div class="sub-header-bar">
+    <div class="hero-eyebrow-container">
+      <div class="hero-pill" id="heroPill">
+        <span class="chip">LIVE AI</span>
+        <span class="pill-label">Autonomous Neural Surveillance &amp; Real-Time Person Detection</span>
+        <svg class="pill-arrow" viewBox="0 0 9.5 8" fill="none">
+          <path d="M0.7 4H8.8M5.6 0.75 8.85 4 5.6 7.25" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/>
         </svg>
-        Staff & Memory Console
-      </button>
+      </div>
+    </div>
+
+    <div class="role-summary-bar">
+      <div class="role-pill pill-staff">
+        <div class="role-pill-header">
+          <span class="role-title">STAFF DETECTED</span>
+          <span class="role-badge-count" id="summaryStaffCount">0</span>
+        </div>
+        <div class="role-pill-sub" id="summaryStaffMembers">None currently detected</div>
+      </div>
+
+      <div class="role-pill pill-unknown">
+        <div class="role-pill-header">
+          <span class="role-title">VISITORS / UNKNOWN</span>
+          <span class="role-badge-count" id="summaryUnknownCount">0</span>
+        </div>
+        <div class="role-pill-sub">Unverified Persons</div>
+      </div>
+
+      <div class="role-actions" style="margin-left:auto; display:flex; gap:8px; align-items:center;">
+        <button class="btn ghost" id="btnOpenStaffModal" title="Open Staff & Body Memory Console" style="font-size:0.78rem; padding:7px 14px; display:flex; align-items:center; gap:6px;">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width:14px; height:14px;">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
+          </svg>
+          Staff &amp; Memory Console
+        </button>
+      </div>
     </div>
   </div>
 
@@ -116,189 +152,56 @@
           </div>
         </div>
 
-        <!-- Standby / Camera Login Overlay (Shown when camera not connected) -->
-        <div class="standby-overlay" id="standbyOverlay">
-          <div class="radar-spinner"></div>
-          <div class="qr-card camera-login-card" style="max-width: 480px; align-items: stretch; text-align: left; padding: 2rem 2.2rem;">
-            <button class="qr-close-btn" id="btnCloseStandby" title="Close Dialog">✕</button>
-            
-            <div class="pairing-title" style="justify-content: flex-start; margin-bottom: 0.25rem;">
-              <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="var(--accent-sky)" stroke-width="2">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-              </svg>
-              <span>CONNECT CCTV CAMERA</span>
-            </div>
-            
-            <p class="pairing-subtitle" style="text-align: left; margin-bottom: 1rem; line-height: 1.5; font-size: 0.88rem; color: #94a3b8;">
-              Enter your CCTV admin username & password. Our autonomous background bot will sweep the local network, test manufacturer codes (Hikvision, Dahua, ONVIF), and stream video directly.
-            </p>
-
-            <form id="overlayCctvForm" style="display:flex; flex-direction:column; gap:14px; width:100%;">
-              <div class="form-group" style="margin-bottom:0;">
-                <label style="display:block; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
-                  CCTV Admin Username
-                </label>
-                <div style="position:relative; display:flex; align-items:center;">
-                  <span style="position:absolute; left:12px; color:#64748b; font-size:0.9rem;">👤</span>
-                  <input type="text" id="overlayCctvUsername" class="custom-input" value="admin" placeholder="admin" required
-                         style="width:100%; box-sizing:border-box; background:rgba(8,8,12,0.9); border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:10px 12px 10px 38px; color:#fff; font-size:0.92rem;" />
-                </div>
-              </div>
-
-              <div class="form-group" style="margin-bottom:0;">
-                <label style="display:block; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
-                  Target Camera IP <span style="font-weight:400; color:#64748b; font-size:0.7rem;">(Optional — leave blank to auto-sweep)</span>
-                </label>
-                <div style="position:relative; display:flex; align-items:center;">
-                  <span style="position:absolute; left:12px; color:#64748b; font-size:0.9rem;">🌐</span>
-                  <input type="text" id="overlayCctvIp" class="custom-input" placeholder="e.g. 10.13.4.26 (auto-detected if blank)"
-                         style="width:100%; box-sizing:border-box; background:rgba(8,8,12,0.9); border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:10px 12px 10px 38px; color:#fff; font-size:0.92rem;" />
-                </div>
-              </div>
-
-              <div class="form-group" style="margin-bottom:0;">
-                <label style="display:block; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
-                  CCTV Password
-                </label>
-                <div style="position:relative; display:flex; align-items:center;">
-                  <span style="position:absolute; left:12px; color:#64748b; font-size:0.9rem;">🔑</span>
-                  <input type="password" id="overlayCctvPassword" class="custom-input" placeholder="Enter camera password..."
-                         style="width:100%; box-sizing:border-box; background:rgba(8,8,12,0.9); border:1px solid rgba(255,255,255,0.15); border-radius:8px; padding:10px 12px 10px 38px; color:#fff; font-size:0.92rem;" />
-                </div>
-              </div>
-
-              <!-- Live Bot Status & Terminal Line -->
-              <div id="overlayBotStatusBox" style="background:rgba(0,0,0,0.5); border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:8px 12px; font-family:'JetBrains Mono',monospace; font-size:0.75rem; color:#94a3b8; display:flex; align-items:center; gap:8px;">
-                <span class="pulse-dot" id="overlayBotPulse" style="width:7px; height:7px; border-radius:50%; background:#64748b; box-shadow:none;"></span>
-                <span id="overlayBotStatusText" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Bot Status: Awaiting credentials...</span>
-              </div>
-
-              <button type="submit" id="btnOverlayConnect" class="btn-launch-scan" style="margin-top:4px; padding:12px 18px; font-size:0.95rem; border-radius:10px; width:100%; background:linear-gradient(135deg, #0284c7 0%, #0369a1 100%); border:1px solid rgba(56, 189, 248, 0.4); color:#fff; font-weight:700; cursor:pointer;">
-                ⚡ Auto-Detect & Connect Camera
-              </button>
-            </form>
-
-            <div style="display:flex; justify-content:space-between; align-items:center; width:100%; margin-top:0.75rem; font-size:0.78rem; color:#64748b;">
-              <a href="connect.html" style="color:var(--accent-sky); text-decoration:none; font-weight:600;">Open Full Bot Radar & Scanner →</a>
-              <button type="button" id="btnSimulateOverlay" style="background:none; border:none; color:#94a3b8; cursor:pointer; text-decoration:underline; font-size:0.78rem;">Test Demo Feed</button>
-            </div>
-          </div>
+        <!-- Dynamic CCTV Multi-Camera Switcher Bar (Appears when 1+ cameras are available) -->
+        <div class="cctv-camera-bar" id="cctvCameraBar" style="display:none; position:absolute; top:12px; left:16px; z-index:15; display:none; gap:8px; align-items:center; flex-wrap:wrap; max-width:calc(100% - 32px);">
+          <div style="font-size:0.7rem; font-family:'JetBrains Mono',monospace; color:#a1a1aa; font-weight:700; text-transform:uppercase; letter-spacing:0.06em; background:rgba(0,0,0,0.65); padding:4px 8px; border-radius:6px; border:1px solid rgba(255,255,255,0.1);">CAMERAS:</div>
+          <div id="cctvCameraBarItems" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
         </div>
+
       </div>
 
       <!-- CCTV Interactive Control Bar -->
       <div class="control-bar">
         <div class="btn-group">
-          <!-- 1. Snapshot -->
-          <button class="btn btn-secondary" id="btnSnapshot" title="Take Instant HD Photo">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M3 9a2 2 0 012-2h.93a2 2 0 001.664-.89l.812-1.22A2 2 0 0110.07 4h3.86a2 2 0 011.664.89l.812 1.22A2 2 0 0018.07 7H19a2 2 0 012 2v9a2 2 0 01-2 2H5a2 2 0 01-2-2V9z" />
-              <path stroke-linecap="round" stroke-linejoin="round" d="M15 13a3 3 0 11-6 0 3 3 0 016 0z" />
-            </svg>
-            Snapshot
-          </button>
-
-          <!-- 2. Record Video -->
-          <button class="btn btn-secondary" id="btnRecord" title="Start CCTV Video Recording">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <circle cx="12" cy="12" r="7" fill="currentColor" />
-            </svg>
-            <span id="recordBtnText">Record</span>
-          </button>
-
-          <!-- 3. Remote Torch / Flash -->
-          <button class="btn btn-secondary" id="btnRemoteTorch" title="Remotely Toggle Phone Flashlight">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
-            </svg>
-            Torch
-          </button>
-
-          <!-- 4. Remote Camera Flip -->
-          <button class="btn btn-secondary" id="btnRemoteFlip" title="Remotely Switch Between Front & Rear Camera">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-            </svg>
-            Flip Lens
-          </button>
-
-          <!-- 4b. Remote Phone Vibrate -->
-          <button class="btn btn-secondary btn-vibrate" id="btnRemoteVibrate" title="Remotely Vibrate Phone">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <rect x="7" y="2" width="10" height="20" rx="2" stroke-width="1.8" />
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M11 18h2" />
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 8a4.5 4.5 0 000 8m18-8a4.5 4.5 0 010 8" />
-            </svg>
-            <span id="vibrateBtnText">Vibrate</span>
-          </button>
-        </div>
-
-        <div class="btn-group">
-
           <!-- AI Detection Engine Switcher (YOLOv8 vs MobileNetV2) -->
-          <button class="btn btn-secondary btn-ai-engine" id="btnAiEngineToggle" title="Switch AI Detection Engine: YOLOv8 Deep AI (Server) / MobileNetV2 (Browser)">
+          <button class="btn btn-secondary ghost btn-ai-engine" id="btnAiEngineToggle" title="Switch AI Detection Engine: YOLOv8 Deep AI (Server) / MobileNetV2 (Browser)">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
             <span id="aiEngineBtnText">🚀 YOLOv8 AI</span>
           </button>
 
-          <!-- 6. Human Detection AI Bot (Green Box Targeter) -->
-          <button class="btn btn-secondary btn-human-bot" id="btnHumanBotToggle" title="Toggle AI Human Detection Bot (Detects only humans with green box)">
+          <!-- Human Detection AI Bot (Green Box Targeter) -->
+          <button class="btn btn-secondary ghost btn-human-bot" id="btnHumanBotToggle" title="Toggle AI Human Detection Bot (Detects only humans with green box)">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
             </svg>
             <span id="humanBotBtnText">Human Bot</span>
           </button>
 
-          <!-- Quick Body Memory Gallery Button -->
-          <button class="btn btn-secondary" id="btnOpenMemoryGallery" title="View Remembered Humans Gallery">
+          <!-- AI Body Memory Gallery (Persistent Person IDs) -->
+          <button class="btn btn-secondary ghost" id="btnOpenMemoryGallery" title="Open AI Human Memory Gallery (Persistent Person IDs)">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z" />
             </svg>
             <span>🧠 Memory</span>
           </button>
 
-          <!-- 7. In-Stream QR Scanner -->
-          <button class="btn btn-secondary" id="btnQrScanToggle" title="Live QR/Barcode Recognition from Phone Feed">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v1m6 11h2m-6 0h-2v4m0-11v3m0 0h.01M12 12h4.01M16 20h4M4 12h4m12 0h.01M5 8h2a1 1 0 001-1V5a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1zm12 0h2a1 1 0 001-1V5a1 1 0 00-1-1h-2a1 1 0 00-1 1v2a1 1 0 001 1zM5 20h2a1 1 0 001-1v-2a1 1 0 00-1-1H5a1 1 0 00-1 1v2a1 1 0 001 1z" />
-            </svg>
-            QR Reader
-          </button>
-
-          <!-- 8. Aspect Ratio Toggle (Auto / 16:9 Landscape / 9:16 Portrait) -->
-          <button class="btn btn-secondary" id="btnAspectToggle" title="Aspect Ratio: Auto / 16:9 Landscape / 9:16 Portrait">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <rect x="3" y="5" width="18" height="14" rx="2" stroke-width="2"/>
-            </svg>
-            <span id="aspectBtnText">Aspect: Auto</span>
-          </button>
-
-          <!-- 9. Fit vs Fill (Cover) Toggle -->
-          <button class="btn btn-secondary" id="btnFitToggle" title="Video Scaling: Fit (Contain) vs Fill (Cover)">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
-            </svg>
-            <span id="fitBtnText">Fit</span>
-          </button>
-
-          <!-- 10. Rotate Video Stream (0° / 90° / 180° / 270°) -->
-          <button class="btn btn-secondary" id="btnRotateToggle" title="Rotate Video: 0° / 90° / 180° / 270°">
+          <!-- Rotate Video Stream (0° / 90° / 180° / 270°) -->
+          <button class="btn btn-secondary ghost" id="btnRotateToggle" title="Rotate Video: 0° / 90° / 180° / 270°">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
             </svg>
             <span id="rotateBtnText">0°</span>
           </button>
 
-          <!-- 11. Connect CCTV Camera Dialog Button -->
-          <button class="btn btn-secondary" id="btnShowQr" title="Show CCTV Camera Login Dialog">
+          <!-- Connect CCTV Camera Dialog Button -->
+          <button class="btn btn-secondary ghost" id="btnShowQr" title="Show CCTV Camera Login Dialog">
             📡 Connect Camera
           </button>
 
-          <!-- 12. Fullscreen -->
-          <button class="btn btn-secondary" id="btnFullscreen" title="Toggle Fullscreen">
+          <!-- Fullscreen -->
+          <button class="btn btn-secondary ghost" id="btnFullscreen" title="Toggle Fullscreen">
             <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" d="M4 8V4m0 0h4M4 4l5 5m11-1V4m0 0h-4m4 0l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
             </svg>
@@ -306,19 +209,24 @@
         </div>
       </div>
 
+
       <!-- People Occupancy Over Time Graph Panel (Real-Time Timeline Analytics) -->
       <div class="panel-card people-analytics-panel" id="peopleAnalyticsPanel">
         <!-- Analytics Mode Switcher Tabs -->
         <div class="analytics-mode-tabs">
           <button class="analytics-tab-btn active" id="btnTabPopularTimes">
-            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:#2a9d8f;">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:#ffffff;">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
             </svg>
-            Popular Times (Day & Hourly Graph)
+            Popular Times (Day &amp; Hourly Graph)
           </button>
           <button class="analytics-tab-btn" id="btnTabLiveGraph">
             <span class="live-indicator-dot"></span>
             Live Real-Time Stream (60s / 5m / 1h)
+          </button>
+          <button class="analytics-tab-btn" id="btnTabPdfReport" style="color:#ffffff;">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width:14px; height:14px; color:#ffffff;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            Export PDF Report
           </button>
         </div>
 
@@ -356,6 +264,10 @@
               <div class="btn-group">
                 <button class="btn btn-secondary btn-xs" id="btnSeedPopular" title="Clear all local data and reset to 0">🗑️ Clear Data</button>
                 <button class="btn btn-secondary btn-xs" id="btnExportPopularCsv" title="Export Popular Times as CSV">📥 Export CSV</button>
+                <button class="btn btn-primary btn-xs" id="btnOpenPdfReportModal" title="Download Full Day or Custom Time Window Analytics PDF Report (e.g. 01:00 AM – 02:00 AM)" style="background:#ffffff; color:#000000; font-weight:700; border:1px solid #ffffff; border-radius:6px; display:inline-flex; align-items:center; gap:5px; cursor:pointer;">
+                  <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width:12px; height:12px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+                  📄 Download PDF Report
+                </button>
               </div>
             </div>
           </div>
@@ -364,7 +276,7 @@
           <div class="popular-summary-strip">
             <div class="pop-stat">
               <span class="pop-lbl">Busiest Hour:</span>
-              <strong id="popPeakHour" style="color:var(--accent-cyan);">--</strong>
+              <strong id="popPeakHour" style="color:#ffffff;">--</strong>
             </div>
             <div class="pop-stat">
               <span class="pop-lbl">Daily Total Traffic:</span>
@@ -372,7 +284,7 @@
             </div>
             <div class="pop-stat">
               <span class="pop-lbl">Current Live Traffic:</span>
-              <strong id="popCurrentStatus" style="color:var(--accent-green);">Live: 0 in view</strong>
+              <strong id="popCurrentStatus" style="color:#ffffff;">Live: 0 in view</strong>
             </div>
           </div>
 
@@ -448,15 +360,15 @@
               <div class="series-toggle-group">
                 <label class="series-check-label" title="Toggle Total People curve">
                   <input type="checkbox" id="chkSeriesTotal" checked />
-                  <span class="series-dot" style="background:var(--accent-sky)"></span> Total
+                  <span class="series-dot" style="background:#ffffff"></span> Total
                 </label>
                 <label class="series-check-label" title="Toggle Enrolled Staff curve">
                   <input type="checkbox" id="chkSeriesStaff" checked />
-                  <span class="series-dot" style="background:var(--accent-grass)"></span> Staff
+                  <span class="series-dot" style="background:#a1a1aa"></span> Staff
                 </label>
                 <label class="series-check-label" title="Toggle Unknown / Visitors curve">
                   <input type="checkbox" id="chkSeriesVisitors" checked />
-                  <span class="series-dot" style="background:#a855f7"></span> Visitors
+                  <span class="series-dot" style="background:#71717a"></span> Visitors
                 </label>
               </div>
 
@@ -491,11 +403,11 @@
           <!-- Graph Footer & Status Legend -->
           <div class="graph-footer">
             <div class="graph-legend">
-              <span class="legend-item"><span class="legend-line" style="background:var(--accent-sky);"></span> Total People</span>
-              <span class="legend-item"><span class="legend-line" style="background:var(--accent-grass);"></span> Enrolled Staff</span>
-              <span class="legend-item"><span class="legend-line" style="background:#a855f7;"></span> Unknown / Visitors</span>
-              <span class="legend-item"><span class="legend-dashed" style="border-color:#f59e0b;"></span> Peak Occupancy</span>
-              <span class="legend-item"><span class="legend-dashed" style="border-color:var(--accent-sky);"></span> Average Occupancy</span>
+              <span class="legend-item"><span class="legend-line" style="background:#ffffff;"></span> Total People</span>
+              <span class="legend-item"><span class="legend-line" style="background:#a1a1aa;"></span> Enrolled Staff</span>
+              <span class="legend-item"><span class="legend-line" style="background:#71717a;"></span> Unknown / Visitors</span>
+              <span class="legend-item"><span class="legend-dashed" style="border-color:#ffffff;"></span> Peak Occupancy</span>
+              <span class="legend-item"><span class="legend-dashed" style="border-color:#71717a;"></span> Average Occupancy</span>
             </div>
             <div class="graph-status-info">
               <span id="graphOccupancyDensity" class="density-pill density-vacant">STATUS: VACANT</span>
@@ -534,7 +446,7 @@
         <div style="padding: 0.4rem 0.2rem 0.4rem 0.2rem;">
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px; font-size:0.68rem; font-family:var(--font-mono); color:var(--text-muted);">
             <span>TREND (LAST 60s)</span>
-            <span id="miniSparklinePeak" style="color:#f59e0b;">PEAK: 0</span>
+            <span id="miniSparklinePeak" style="color:#ffffff;">PEAK: 0</span>
           </div>
           <canvas id="miniPeopleSparkline" width="300" height="38" style="width:100%; height:38px; display:block; border-radius:6px; background:rgba(0,0,0,0.3); border:1px solid rgba(255,255,255,0.06);"></canvas>
         </div>
@@ -596,11 +508,11 @@
           </div>
           <div style="display:flex; justify-content:space-between;">
             <span>Signaling:</span>
-            <strong style="color:var(--accent-green);" id="telemetryWs">CONNECTED</strong>
+            <strong style="color:#ffffff;" id="telemetryWs">CONNECTED</strong>
           </div>
           <div style="display:flex; justify-content:space-between;">
             <span>WebRTC State:</span>
-            <strong style="color:var(--accent-cyan);" id="telemetryIce">STANDBY</strong>
+            <strong style="color:#ffffff;" id="telemetryIce">STANDBY</strong>
           </div>
           <div style="display:flex; justify-content:space-between;">
             <span>Video Codec:</span>
@@ -612,15 +524,18 @@
               <span class="bot-indicator-dot" id="botTelemetryDot"></span>
               Human Bot AI:
             </span>
-            <strong style="color:var(--accent-green);" id="telemetryBotStatus">OFF</strong>
+            <strong style="color:#ffffff;" id="telemetryBotStatus">OFF</strong>
           </div>
           <div style="display:flex; justify-content:space-between;">
             <span>Humans in Vision:</span>
-            <strong style="color:var(--accent-green); font-size:0.95rem;" id="telemetryHumanCount">0</strong>
+            <strong style="color:#ffffff; font-size:0.95rem;" id="telemetryHumanCount">0</strong>
           </div>
-          <div style="display:flex; justify-content:space-between;">
+          <div style="display:flex; justify-content:space-between; align-items:center;">
             <span>Total Unique IDs:</span>
-            <strong style="color:var(--accent-cyan); font-size:0.95rem;" id="telemetryTotalTracked">0</strong>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <strong style="color:#ffffff; font-size:0.95rem;" id="telemetryTotalTracked">0</strong>
+              <button id="btnResetTrackCount" title="Reset Unique Person Counter" style="background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.16); color:#a1a1aa; border-radius:4px; cursor:pointer; font-size:0.75rem; padding:1px 5px; line-height:1.2;">↺</button>
+            </div>
           </div>
         </div>
       </div>
@@ -631,6 +546,94 @@
   <audio id="alertChime" preload="auto">
     <source src="data:audio/wav;base64,UklGRnoGAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQoGAACBhYqFbF1fdJivrJBhNjVgodDbq2EcHCqS1vDDci8ZIZPX78+EKhwpl9vy0Y0tGCeY2/POjC8aJ5nc89OONxkom9zz1ZE6GSmd3vTXk0AbK57f9tiVRhwsn+D32pdIHS2g4ffbmUweLqHi+N2cUB8vomnZqG1FHyxR" type="audio/wav">
   </audio>
+
+  <!-- CCTV / NVR Secure Login Pop-up Modal -->
+  <div class="standby-overlay" id="standbyOverlay">
+    <div class="qr-card camera-login-card" style="max-width: 500px; align-items: stretch; text-align: left; padding: 2rem 2.2rem; background:rgba(18, 18, 22, 0.94); border:1px solid rgba(255, 255, 255, 0.16); border-radius:16px; box-shadow:0 30px 80px -10px rgba(0,0,0,0.9), 0 0 50px rgba(0,0,0,0.8);">
+      <button class="qr-close-btn" id="btnCloseStandby" title="Close Dialog">✕</button>
+      
+      <div class="pairing-title" style="justify-content: flex-start; margin-bottom: 0.25rem;">
+        <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        <span style="font-size:1.1rem; font-weight:800; letter-spacing:0.04em;">CCTV / NVR SECURE LOGIN</span>
+      </div>
+      
+      <p style="font-size:0.82rem; color:#a1a1aa; margin:0 0 16px 0; line-height:1.5;">
+        Enter your CCTV, NVR, or IP camera credentials. The system securely scans and verifies reachable endpoints on your local network.
+      </p>
+
+      <form id="overlayCctvForm" style="display:flex; flex-direction:column; gap:14px; width:100%;">
+        <!-- Camera IP Address & Port (Visible & Direct) -->
+        <div class="form-group" style="margin-bottom:0;">
+          <label for="overlayCctvIp" style="display:flex; justify-content:space-between; align-items:center; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
+            <span>Camera / NVR IP Address <span style="color:#94a3b8; font-weight:400; text-transform:none; font-size:0.72rem;">(Optional — Auto-Discovered)</span></span>
+            <span style="color:#94a3b8; font-weight:400; text-transform:none; font-size:0.72rem;">Leave empty for auto-scan</span>
+          </label>
+          <div style="position:relative; display:flex; align-items:center;">
+            <span style="position:absolute; left:10px; color:#64748b; font-size:0.85rem;">🌐</span>
+            <input type="text" id="overlayCctvIp" class="custom-input" placeholder="Leave empty for auto-discovery (or enter IP:Port if known)"
+                   style="width:100%; box-sizing:border-box; background:#18181b; border:1px solid #27272a; border-radius:8px; padding:10px 10px 10px 32px; color:#fff; font-size:0.88rem;" />
+          </div>
+        </div>
+
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+          <div class="form-group" style="margin-bottom:0;">
+            <label for="overlayCctvUsername" style="display:block; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
+              Username
+            </label>
+            <div style="position:relative; display:flex; align-items:center;">
+              <span style="position:absolute; left:10px; color:#64748b; font-size:0.85rem;">👤</span>
+              <input type="text" id="overlayCctvUsername" class="custom-input" required autocomplete="username" placeholder="Username"
+                     style="width:100%; box-sizing:border-box; background:#18181b; border:1px solid #27272a; border-radius:8px; padding:10px 10px 10px 32px; color:#fff; font-size:0.88rem;" />
+            </div>
+          </div>
+
+          <div class="form-group" style="margin-bottom:0;">
+            <label for="overlayCctvPassword" style="display:block; font-size:0.75rem; font-weight:700; color:#cbd5e1; margin-bottom:5px; text-transform:uppercase; letter-spacing:0.06em;">
+              Password
+            </label>
+            <div style="position:relative; display:flex; align-items:center;">
+              <span style="position:absolute; left:10px; color:#64748b; font-size:0.85rem;">🔑</span>
+              <input type="password" id="overlayCctvPassword" class="custom-input" autocomplete="current-password" placeholder="Password"
+                     style="width:100%; box-sizing:border-box; background:#18181b; border:1px solid #27272a; border-radius:8px; padding:10px 34px 10px 32px; color:#fff; font-size:0.88rem;" />
+              <button type="button" id="overlayTogglePassBtn" title="Toggle password visibility" style="position:absolute; right:8px; background:none; border:none; color:#a1a1aa; cursor:pointer; font-size:0.85rem; padding:2px;">👁️</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Live Discovery & Verification Status Box -->
+        <div id="overlayBotStatusBox" style="background:#18181b; border:1px solid #27272a; border-radius:8px; padding:9px 12px; font-family:'JetBrains Mono',monospace; font-size:0.75rem; color:#94a3b8; display:flex; align-items:center; gap:8px;">
+          <span class="pulse-dot" id="overlayBotPulse" style="width:7px; height:7px; border-radius:50%; background:#71717a; box-shadow:none;"></span>
+          <span id="overlayBotStatusText" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">Enter camera IP + credentials above, then click Connect.</span>
+        </div>
+
+        <!-- Real Dynamic Camera Discovery Results Container -->
+        <div id="overlayCameraResults" style="display:none; max-height:220px; overflow-y:auto; border:1px solid #27272a; border-radius:8px; background:#121215; padding:10px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <span style="font-size:0.72rem; font-weight:700; color:#cbd5e1; text-transform:uppercase; letter-spacing:0.06em;">Discovered Devices</span>
+            <span id="overlayResultsBadge" style="font-size:0.7rem; font-family:'JetBrains Mono',monospace; padding:2px 6px; border-radius:4px; background:#27272a; color:#fff;">0 Verified</span>
+          </div>
+          <div id="overlayResultsList" style="display:flex; flex-direction:column; gap:6px;"></div>
+        </div>
+
+        <div style="display:flex; gap:10px; margin-top:2px;">
+          <button type="submit" id="btnOverlayConnect" class="btn-launch-scan" style="flex:1; padding:11px 16px; font-size:0.92rem; border-radius:8px; background:#ffffff; border:1px solid #ffffff; color:#000000; font-weight:700; cursor:pointer;">
+            ⚡ Connect &amp; Discover Camera
+          </button>
+          <button type="button" id="btnOverlayClearAll" title="Clear all saved camera configurations" style="padding:11px 14px; font-size:0.82rem; border-radius:8px; background:#27272a; border:1px solid #3f3f46; color:#ef4444; font-weight:600; cursor:pointer; display:flex; align-items:center; gap:6px; white-space:nowrap;">
+            🗑️ Clear Saved
+          </button>
+        </div>
+      </form>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; width:100%; margin-top:0.75rem; font-size:0.78rem; color:#64748b;">
+        <span style="color:#71717a;">Ceova Vision AI Core • Secure TLS End-to-End</span>
+        <span style="color:#71717a;">Orbit v2.5</span>
+      </div>
+    </div>
+  </div>
 
   <!-- Staff Management & Photo Enrollment Modal -->
   <div class="modal-overlay hidden" id="staffModal">
@@ -851,6 +854,126 @@
         </div>
       </div>
     </div>
+  <!-- PDF Analytics Report Generator Modal -->
+  <div class="modal-overlay hidden" id="pdfReportModal" style="display:none; z-index:999999;">
+    <div class="modal-card pdf-report-modal-card">
+      <div class="modal-header">
+        <div class="modal-title">
+          <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="color:#ffffff; width:20px; height:20px;">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <div>
+            <div style="font-weight:700; font-size:1.1rem; color:#f8fafc;">Download CCTV Footfall &amp; Analytics PDF</div>
+            <div style="font-size:0.75rem; color:#94a3b8;">Export full daily report or select custom time window (e.g. 1:00 AM – 2:00 AM)</div>
+          </div>
+        </div>
+        <button class="modal-close-btn" id="btnClosePdfModal" title="Close Dialog">✕</button>
+      </div>
+
+      <div class="modal-body" style="padding:1.25rem;">
+        <!-- Mode Switcher: Custom Window vs Full Day -->
+        <div class="report-mode-selector">
+          <button type="button" class="report-mode-btn active" id="btnModeCustom">
+            ⏱️ Custom Time Window (e.g. 1:00 AM – 2:00 AM)
+          </button>
+          <button type="button" class="report-mode-btn" id="btnModeFullDay">
+            ☀️ Full Daily Report (24 Hours)
+          </button>
+        </div>
+
+        <!-- Filter Controls Form -->
+        <div class="report-filters-grid">
+          <div>
+            <label class="report-field-label">Target Date</label>
+            <input type="date" id="reportInputDate" class="custom-input report-input" />
+          </div>
+
+          <div id="timeRangeInputsGroup" style="display:flex; gap:10px;">
+            <div style="flex:1;">
+              <label class="report-field-label">From Time</label>
+              <input type="time" id="reportInputStartTime" value="01:00" class="custom-input report-input" />
+            </div>
+            <div style="flex:1;">
+              <label class="report-field-label">To Time</label>
+              <input type="time" id="reportInputEndTime" value="02:00" class="custom-input report-input" />
+            </div>
+          </div>
+
+          <div>
+            <label class="report-field-label">Camera Scope</label>
+            <select id="reportCameraSelect" class="custom-input report-input">
+              <option value="ALL">All Active Surveillance Feeds</option>
+              <option value="CAM-1" selected>CAM-01 [Phone Rear Camera / IP Webcam]</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Quick Time Presets Chips -->
+        <div class="report-presets-row" id="reportPresetsRow">
+          <span style="font-size:0.75rem; color:#94a3b8; font-weight:600; text-transform:uppercase;">Quick Windows:</span>
+          <button type="button" class="preset-chip active" data-start="01:00" data-end="02:00">1:00 AM – 2:00 AM</button>
+          <button type="button" class="preset-chip" data-start="09:00" data-end="12:00">Morning (9am–12pm)</button>
+          <button type="button" class="preset-chip" data-start="12:00" data-end="17:00">Afternoon (12pm–5pm)</button>
+          <button type="button" class="preset-chip" data-start="17:00" data-end="21:00">Evening (5pm–9pm)</button>
+          <button type="button" class="preset-chip" data-start="00:00" data-end="23:59">Full 24h</button>
+        </div>
+
+        <!-- Real-Time Metrics Summary Card Preview -->
+        <div class="report-preview-section">
+          <div class="report-preview-header">
+            <span style="font-weight:700; font-size:0.85rem; color:#cbd5e1; text-transform:uppercase; letter-spacing:0.5px;">Live Report Preview &amp; Analytics</span>
+            <span id="reportSelectedWindowBadge" class="badge" style="background:#18181b; color:#ffffff; border:1px solid #3f3f46; font-size:0.75rem; padding:3px 8px; border-radius:4px;">1:00 AM – 2:00 AM</span>
+          </div>
+
+          <div class="report-kpi-grid">
+            <div class="report-kpi-card">
+              <div class="kpi-label">Total Individuals Detected</div>
+              <div class="kpi-value" id="kpiReportTotal">--</div>
+              <div class="kpi-sub" id="kpiReportSubVisitors">Estimated unique footfall</div>
+            </div>
+
+            <div class="report-kpi-card highlight-peak">
+              <div class="kpi-label">Peak Timing &amp; Max Count</div>
+              <div class="kpi-value peak-val" id="kpiReportPeak">--</div>
+              <div class="kpi-sub" id="kpiReportPeakTime">Peak: -- at --</div>
+            </div>
+
+            <div class="report-kpi-card">
+              <div class="kpi-label">Average Occupancy</div>
+              <div class="kpi-value" id="kpiReportAvg">--</div>
+              <div class="kpi-sub">Humans present / interval</div>
+            </div>
+
+            <div class="report-kpi-card">
+              <div class="kpi-label">Role Breakdown</div>
+              <div class="kpi-value" style="font-size:1.05rem; line-height:1.6rem;" id="kpiReportRoles">--</div>
+              <div class="kpi-sub">Staff vs Visitors vs Unknown</div>
+            </div>
+          </div>
+
+          <!-- Preview Chart -->
+          <div class="report-chart-container" style="margin-top:10px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <span style="font-size:0.75rem; color:#94a3b8; font-weight:600; text-transform:uppercase;">Footfall Timeline Graph (Embedded in PDF)</span>
+              <span id="reportPeakMarkerText" style="font-size:0.75rem; color:#ffffff; font-weight:600;">⭐ Peak Highlighted</span>
+            </div>
+            <canvas id="pdfPreviewCanvas" width="700" height="200" style="width:100%; height:190px; background:#121215; border-radius:8px; border:1px solid #27272a;"></canvas>
+          </div>
+        </div>
+
+        <!-- Action Buttons -->
+        <div style="display:flex; justify-content:flex-end; gap:10px; margin-top:1.25rem; align-items:center;">
+          <button type="button" class="btn btn-secondary" id="btnCancelPdfModal">Cancel</button>
+          <button type="button" class="btn btn-secondary" id="btnPrintReport" style="display:flex; align-items:center; gap:6px;">
+            🖨️ Print / Save View
+          </button>
+          <button type="button" class="btn btn-primary" id="btnDownloadPdf" style="display:flex; align-items:center; gap:8px; background:#ffffff; color:#000000; font-weight:700; padding:10px 22px; font-size:0.95rem; border:1px solid #ffffff; border-radius:6px; cursor:pointer;">
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" style="width:18px; height:18px;"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
+            <span id="downloadBtnText">📥 Download PDF Report</span>
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Scripts: TensorFlow.js, Local COCO-SSD Model & CCTV Viewer -->
@@ -858,6 +981,8 @@
   <script src="vendor/coco-ssd.min.js"></script>
   <script src="js/viewer.js?v=2.9"></script>
   <script src="js/ceova_ecosystem.js?v=1.0"></script>
+  <script src="vendor/jspdf.umd.min.js"></script>
+  <script src="js/report_generator.js?v=1.0"></script>
 
   <!-- High-Framerate Smooth Stream Loader (Native MJPEG, No Artificial Lag, Auto-Reconnect) -->
   <script>
@@ -876,13 +1001,16 @@
       var proto = document.getElementById('streamProtocolText');
       var osd   = document.getElementById('osdStatus');
       var overlay = document.getElementById('standbyOverlay');
+      var botStatus = document.getElementById('overlayBotStatusText');
+      var botPulse = document.getElementById('overlayBotPulse');
 
       if (online) {
         if (pulse) pulse.className = 'pulse-dot online';
         if (text)  text.textContent = 'LIVE // ' + (camName || 'IP Webcam');
         if (proto) proto.textContent = 'HTTP MJPEG (30 FPS)';
-        if (osd)   { osd.textContent = 'ONLINE'; osd.style.color = '#4ade80'; }
+        if (osd)   { osd.textContent = 'ONLINE'; osd.style.color = '#ffffff'; }
         if (overlay) overlay.classList.add('hidden');
+        if (botPulse) botPulse.style.background = '#4ade80';
 
         // Auto-activate AI Detection Bot on first live frame
         if (!botAutoStarted) {
@@ -904,6 +1032,9 @@
         if (proto) proto.textContent = 'DISCONNECTED';
         if (osd)   { osd.textContent = 'OFFLINE'; osd.style.color = '#ef4444'; }
         if (overlay) overlay.classList.remove('hidden');
+        if (botStatus) {
+          botStatus.textContent = camName ? ('Camera "' + camName + '" unreachable.') : 'No camera connected. Enter credentials to discover devices.';
+        }
       }
     }
 
@@ -931,14 +1062,16 @@
         var streamSrc = videoUrl + '&_s=' + Date.now();
 
         img.onload = function() {
-          // Frame has arrived
-          setStatus(true, camName);
+          // Verify actual frame dimensions have arrived
+          if (img.naturalWidth > 0 && img.naturalHeight > 0) {
+            setStatus(true, camName);
+          }
         };
 
         img.onerror = function() {
           console.warn('[StreamPlayer] Stream interrupted or unreachable. Waiting to reconnect...');
           setStatus(false, camName);
-          scheduleReconnect(2500);
+          scheduleReconnect(3000);
         };
 
         img.src = streamSrc;
@@ -953,30 +1086,32 @@
           testImg.crossOrigin = 'anonymous';
           var testSrc = shotUrl + '&_t=' + Date.now();
           testImg.onload = function() {
-            console.log('[StreamPlayer] Camera responded to ping! Connecting video stream...');
-            connectMjpeg();
+            if (testImg.naturalWidth > 0) {
+              console.log('[StreamPlayer] Camera responded to ping! Connecting video stream...');
+              connectMjpeg();
+            } else {
+              setStatus(false, camName);
+              scheduleReconnect(3500);
+            }
           };
           testImg.onerror = function() {
-            // Still offline, retry again
             setStatus(false, camName);
-            scheduleReconnect(3000);
+            scheduleReconnect(3500);
           };
           testImg.src = testSrc;
-        }, delayMs || 2500);
+        }, delayMs || 3000);
       }
 
       // Continuous watchdog to detect frozen connections
       if (watchdogTimer) clearInterval(watchdogTimer);
       watchdogTimer = setInterval(function() {
         if (!isLive) {
-          // If offline and no reconnect timer active, trigger ping
-          if (!reconnectTimer) scheduleReconnect(1000);
+          if (!reconnectTimer) scheduleReconnect(3000);
         } else {
-          // If we think it's live but image width is 0 or complete is false
-          if (img.naturalWidth === 0 && !img.complete) {
-            console.warn('[StreamPlayer] Watchdog detected frozen stream');
+          if (img.naturalWidth === 0) {
+            console.warn('[StreamPlayer] Watchdog detected zero dimensions');
             setStatus(false, camName);
-            scheduleReconnect(1000);
+            scheduleReconnect(3000);
           }
         }
       }, 4000);
@@ -984,29 +1119,118 @@
       connectMjpeg();
     }
 
-    fetch('/api/cameras')
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        if (!data.cameras || data.cameras.length === 0) return;
-        var cam = data.cameras[0];
+    window.startSmoothStream = startSmoothStream;
+  })();
+  </script>
 
-        // Clean camera URL base (e.g. http://CEOVA:ceova1234@192.168.137.26:8080)
-        var cleanBase = null;
-        if (cam.stream_url && cam.stream_url.startsWith('/api/proxy-stream?url=')) {
-          cleanBase = decodeURIComponent(cam.stream_url.replace('/api/proxy-stream?url=', ''));
-          cleanBase = cleanBase.replace(/\/video$/, '').replace(/\/shot\.jpg$/, '').replace(/\/$/, '');
-        } else if (cam.stream_url && cam.stream_url.startsWith('http')) {
-          cleanBase = cam.stream_url.replace(/\/video$/, '').replace(/\/shot\.jpg$/, '').replace(/\/$/, '');
+  <!-- Orbit Design System Scripts: Background Video Playback & Entrance Animation -->
+  <script>
+  (function() {
+    // 1. Sky video background playback reliability controller (Section 10)
+    var v = document.querySelector('.sky-video');
+    if (v) {
+      v.muted = true;
+      function playSky() {
+        if (v.paused) {
+          v.play().catch(function() {});
         }
-
-        if (!cleanBase) return;
-
-        console.log('[StreamPlayer] Initializing smooth video stream for:', cleanBase);
-        startSmoothStream(cleanBase, cam.name);
-      })
-      .catch(function(err) {
-        console.warn('[StreamPlayer] Camera fetch failed:', err);
+      }
+      playSky();
+      v.addEventListener('canplay', playSky);
+      document.addEventListener('visibilitychange', function() {
+        if (!document.hidden) playSky();
       });
+      ['pointerdown', 'touchstart', 'scroll'].forEach(function(evt) {
+        window.addEventListener(evt, playSky, { once: true, passive: true });
+      });
+    }
+
+    // 2. Entrance animation trigger (Section 8)
+    if (document.documentElement.classList.contains('intro')) {
+      function startEntrance() {
+        requestAnimationFrame(function() {
+          requestAnimationFrame(function() {
+            document.documentElement.classList.add('intro-play');
+          });
+        });
+      }
+      if (document.fonts && document.fonts.ready) {
+        Promise.race([
+          document.fonts.ready,
+          new Promise(function(r) { setTimeout(r, 700); })
+        ]).then(startEntrance);
+      } else {
+        setTimeout(startEntrance, 150);
+      }
+      setTimeout(function() {
+        document.documentElement.classList.remove('intro', 'intro-play');
+      }, 3000);
+    }
+
+    // 3. Connect header PDF report button to modal
+    var btnHeaderPdf = document.getElementById('btnTabPdfReportHeader');
+    if (btnHeaderPdf) {
+      btnHeaderPdf.addEventListener('click', function(e) {
+        e.preventDefault();
+        var target = document.getElementById('btnOpenPdfReportModal') || document.getElementById('btnTabPdfReport');
+        if (target) target.click();
+      });
+    // 4. CEOVA Desktop Keyboard Event Bridge (Solves macOS WKWebView iframe input keystroke swallow bug)
+    window.addEventListener('message', function(evt) {
+      if (!evt.data || evt.data.type !== 'CEOVA_KEYSTROKE') return;
+      var active = document.activeElement;
+      if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA')) {
+        var modal = document.getElementById('standbyOverlay');
+        if (modal && !modal.classList.contains('hidden')) {
+          var userInp = document.getElementById('overlayCctvUsername');
+          var passInp = document.getElementById('overlayCctvPassword');
+          var ipInp = document.getElementById('overlayCctvIp');
+          if (ipInp && document.activeElement === ipInp) {
+            active = ipInp;
+          } else if (userInp && (!userInp.value || document.activeElement === userInp)) {
+            userInp.focus();
+            active = userInp;
+          } else if (passInp) {
+            passInp.focus();
+            active = passInp;
+          }
+        }
+      }
+
+      if (!active || (active.tagName !== 'INPUT' && active.tagName !== 'TEXTAREA')) return;
+
+      var key = evt.data.key;
+      if (key === 'Backspace') {
+        var start = active.selectionStart || 0;
+        var end = active.selectionEnd || 0;
+        if (start === end && start > 0) {
+          active.value = active.value.slice(0, start - 1) + active.value.slice(end);
+          active.setSelectionRange(start - 1, start - 1);
+        } else if (start !== end) {
+          active.value = active.value.slice(0, start) + active.value.slice(end);
+          active.setSelectionRange(start, start);
+        }
+        active.dispatchEvent(new Event('input', { bubbles: true }));
+      } else if (key === 'Tab') {
+        var inputs = Array.from(document.querySelectorAll('input:not([type="hidden"])'));
+        var idx = inputs.indexOf(active);
+        if (idx !== -1) {
+          var next = inputs[(idx + 1) % inputs.length];
+          if (next) next.focus();
+        }
+      } else if (key === 'Enter') {
+        if (active.form) {
+          var submitBtn = active.form.querySelector('button[type="submit"]') || document.getElementById('btnOverlayConnect');
+          if (submitBtn) submitBtn.click();
+        }
+      } else if (key && key.length === 1 && !evt.data.ctrlKey && !evt.data.metaKey) {
+        var start = active.selectionStart || 0;
+        var end = active.selectionEnd || 0;
+        active.value = active.value.slice(0, start) + key + active.value.slice(end);
+        active.setSelectionRange(start + 1, start + 1);
+        active.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    });
   })();
   </script>
 </body>

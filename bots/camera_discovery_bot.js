@@ -15,6 +15,7 @@
  */
 
 const net = require('net');
+const http = require('http');
 const dgram = require('dgram');
 const os = require('os');
 const crypto = require('crypto');
@@ -63,26 +64,38 @@ const STREAM_PATTERNS = [
   { brand: 'Generic RTSP', path: '/', port: 554, desc: 'Root RTSP Stream' }
 ];
 
-const COMMON_CAMERA_PORTS = [554, 1025, 1026, 1027, 1028, 1029, 1030, 8000, 37777, 80, 8080, 8554, 8899, 8081];
+const COMMON_CAMERA_PORTS = [554, 8554, 8000, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8088, 8888, 5000, 5556, 4747, 5856, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 18080, 8200, 9000, 10554, 1935, 6667, 8899];
 
 class CameraDiscoveryBot extends BaseBot {
   constructor(options = {}) {
     super('camera_discovery_bot', '1.0.0', {
-      socketTimeoutMs: options.socketTimeoutMs || 350,
-      rtspTimeoutMs: options.rtspTimeoutMs || 1500,
-      maxConcurrentSockets: options.maxConcurrentSockets || 50
+      socketTimeoutMs: options.socketTimeoutMs || 800,
+      rtspTimeoutMs: options.rtspTimeoutMs || 3000,
+      maxConcurrentSockets: options.maxConcurrentSockets || 60
     });
 
     this.isScanning = false;
     this.scanId = null;
     this.currentProgress = 0;
     this.currentStatus = 'IDLE';
-    this.targetCredentials = { username: 'admin', password: '' };
+    this.targetCredentials = { username: '', password: '' };
     this.logs = [];
     this.discoveredHosts = [];
     this.matchedCameras = [];
+    this.unverifiedDevices = [];
     this.stopRequested = false;
     this.listeners = new Set();
+  }
+
+  _sanitizeCamera(cam) {
+    if (!cam) return cam;
+    const sanitized = { ...cam };
+    delete sanitized._internalAuthUrl;
+    delete sanitized.password;
+    if (sanitized.rtspUrl && sanitized.rtspUrl.includes('@')) {
+      sanitized.rtspUrl = sanitized.rtspUrl.replace(/:([^:@]+)@/, ':••••@');
+    }
+    return sanitized;
   }
 
   async initialize() {
@@ -110,6 +123,13 @@ class CameraDiscoveryBot extends BaseBot {
       ...data
     };
 
+    if (event.camera) {
+      event.camera = this._sanitizeCamera(event.camera);
+    }
+    if (event.cameras && Array.isArray(event.cameras)) {
+      event.cameras = event.cameras.map(c => this._sanitizeCamera(c));
+    }
+
     if (data.message) {
       const logEntry = `[${new Date().toLocaleTimeString()}] ${data.message}`;
       this.logs.push(logEntry);
@@ -129,7 +149,7 @@ class CameraDiscoveryBot extends BaseBot {
   /**
    * Start autonomous scanning for CCTV cameras using provided credentials
    */
-  async startScan({ username = 'admin', password = '', targetIp = null, subnetHint = null }) {
+  async startScan({ username = '', password = '', targetIp = null, subnetHint = null, orgId = 'ORG-DEFAULT' }) {
     if (this.isScanning) {
       return { success: false, message: 'Scan already in progress', scanId: this.scanId };
     }
@@ -139,13 +159,15 @@ class CameraDiscoveryBot extends BaseBot {
     this.scanId = `scan_${Date.now()}`;
     this.currentProgress = 0;
     this.currentStatus = 'INITIALIZING';
-    this.targetCredentials = { username: username.trim(), password: password || '' };
+    this.targetOrgId = orgId || 'ORG-DEFAULT';
+    this.targetCredentials = { username: (username || '').trim(), password: password || '' };
     this.logs = [];
     this.discoveredHosts = [];
     this.matchedCameras = [];
+    this.unverifiedDevices = [];
 
     this.emitUpdate('SCAN_STARTED', {
-      message: `Initiating autonomous CCTV discovery for user '${this.targetCredentials.username}'...`
+      message: 'Initiating autonomous CCTV device discovery on local network...'
     });
 
     // Run asynchronously in the background
@@ -187,10 +209,23 @@ class CameraDiscoveryBot extends BaseBot {
       this.currentProgress = 5;
       
       let candidateIps = [];
+      let customTargetPort = null;
 
-      if (targetIp && net.isIPv4(targetIp.trim())) {
-        candidateIps = [targetIp.trim()];
-        this.emitUpdate('STEP', { message: `Targeting specific IP: ${targetIp}` });
+      let cleanTargetIp = null;
+      if (targetIp) {
+        const rawT = targetIp.trim().replace(/^https?:\/\//i, '').replace(/^rtsp:\/\//i, '').split('/')[0];
+        if (rawT.includes(':')) {
+          const parts = rawT.split(':');
+          cleanTargetIp = parts[0];
+          customTargetPort = parseInt(parts[1], 10);
+        } else {
+          cleanTargetIp = rawT;
+        }
+      }
+
+      if (cleanTargetIp && net.isIPv4(cleanTargetIp)) {
+        candidateIps = [cleanTargetIp];
+        this.emitUpdate('STEP', { message: `Targeting specific IP: ${cleanTargetIp}${customTargetPort ? ':' + customTargetPort : ''}` });
       } else {
         const subnets = this._detectLocalSubnets(subnetHint);
         const wifi = subnets.find(s => s.isWifi) || subnets[0];
@@ -203,6 +238,9 @@ class CameraDiscoveryBot extends BaseBot {
             message: `Detected local network interfaces: ${subnets.map(s => s.cidr).join(', ')}`
           });
         }
+
+        // Awaken any newly powered or IP-changed devices on the local Wi-Fi
+        await this._wakeUpNetworkNeighbors(subnets);
 
         // Generate IP list
         candidateIps = this._generateCandidateIpList(subnets);
@@ -239,10 +277,15 @@ class CameraDiscoveryBot extends BaseBot {
           }
         }
 
-        const instantMatches = await this._probeStreamPaths(onvifCandidates);
+        const { matched: instantMatches, unverified: instantUnverified } = await this._probeStreamPaths(onvifCandidates);
         for (const m of instantMatches) {
-          if (!this.matchedCameras.some(c => c.rtspUrl === m.rtspUrl)) {
+          if (!this.matchedCameras.some(c => c.id === m.id)) {
             this.matchedCameras.push(m);
+          }
+        }
+        for (const u of instantUnverified) {
+          if (!this.unverifiedDevices.some(d => d.ip === u.ip && d.port === u.port)) {
+            this.unverifiedDevices.push(u);
           }
         }
 
@@ -268,7 +311,7 @@ class CameraDiscoveryBot extends BaseBot {
             host: hostFound
           });
         }
-      }, onvifMap);
+      }, onvifMap, customTargetPort);
 
       this.discoveredHosts = openHosts;
       this.emitUpdate('STEP', {
@@ -285,13 +328,18 @@ class CameraDiscoveryBot extends BaseBot {
       this.currentStatus = 'TESTING_CREDENTIALS';
       this.currentProgress = 60;
       this.emitUpdate('STEP', {
-        message: `Probing manufacturer stream paths with credentials for '${this.targetCredentials.username}' on ${hostsToProbe.length} host(s)...`
+        message: `Probing stream protocols on ${hostsToProbe.length} candidate endpoint(s)...`
       });
 
-      const additionalMatches = await this._probeStreamPaths(hostsToProbe);
+      const { matched: additionalMatches, unverified: additionalUnverified } = await this._probeStreamPaths(hostsToProbe);
       for (const m of additionalMatches) {
-        if (!this.matchedCameras.some(c => c.rtspUrl === m.rtspUrl)) {
+        if (!this.matchedCameras.some(c => c.id === m.id)) {
           this.matchedCameras.push(m);
+        }
+      }
+      for (const u of additionalUnverified) {
+        if (!this.unverifiedDevices.some(d => d.ip === u.ip && d.port === u.port) && !this.matchedCameras.some(c => c.ip === u.ip)) {
+          this.unverifiedDevices.push(u);
         }
       }
 
@@ -302,15 +350,25 @@ class CameraDiscoveryBot extends BaseBot {
       if (this.matchedCameras.length > 0) {
         this.currentStatus = 'CAMERAS_FOUND';
         this.emitUpdate('SCAN_COMPLETED', {
-          message: `🎉 Discovery Successful! Found and verified ${this.matchedCameras.length} CCTV camera(s)!`,
+          message: `Found and verified ${this.matchedCameras.length} active camera(s).`,
           cameras: this.matchedCameras,
+          unverifiedDevices: this.unverifiedDevices,
           discoveredHosts: openHosts
         });
       } else {
         this.currentStatus = 'NO_CAMERAS_FOUND';
+        const hasAuthFailed = this.unverifiedDevices.some(d => d.status === 'Authentication failed');
+        const noDevFound = openHosts.length === 0;
+        const finalMsg = noDevFound
+          ? 'No camera detected on the available network.'
+          : (hasAuthFailed
+              ? 'Camera detected, but authentication failed.'
+              : 'Device detected but the camera protocol is not supported.');
+
         this.emitUpdate('SCAN_COMPLETED', {
-          message: `Scan finished. Discovered ${openHosts.length} active camera host(s), but password verification failed. You can connect directly below.`,
+          message: finalMsg,
           cameras: [],
+          unverifiedDevices: this.unverifiedDevices,
           discoveredHosts: openHosts
         });
       }
@@ -324,21 +382,56 @@ class CameraDiscoveryBot extends BaseBot {
   }
 
   /**
-   * Harvest active neighbor IPs on Wi-Fi interface from ARP cache
+   * Send rapid broadcast ping to awaken any newly powered or IP-changed camera devices
+   */
+  async _wakeUpNetworkNeighbors(subnets = []) {
+    try {
+      const socket = dgram.createSocket('udp4');
+      socket.bind(0, () => {
+        try {
+          socket.setBroadcast(true);
+          const pingBuf = Buffer.from('CEOVA_DISCOVERY_PING');
+          socket.send(pingBuf, 0, pingBuf.length, 9, '255.255.255.255', () => {});
+          for (const s of subnets) {
+            if (s.broadcast) {
+              socket.send(pingBuf, 0, pingBuf.length, 9, s.broadcast, () => {});
+            }
+          }
+        } catch (_) {}
+      });
+      await new Promise(r => setTimeout(r, 200));
+      try { socket.close(); } catch (_) {}
+    } catch (_) {}
+  }
+
+  /**
+   * Harvest active neighbor IPs on Wi-Fi interface from ARP cache (filters out incomplete entries)
    */
   _getArpNeighbors(interfaceName = 'en0') {
     const ips = [];
     try {
       const { execSync } = require('child_process');
-      const out = execSync(`arp -an -i ${interfaceName}`, { timeout: 1500 }).toString();
+      let out = '';
+      try {
+        out = execSync(`arp -an -i ${interfaceName}`, { timeout: 1500 }).toString();
+      } catch (_) {
+        out = execSync('arp -an', { timeout: 1500 }).toString();
+      }
       for (const line of out.split('\n')) {
-        const m = line.match(/\((10\.[0-9.]+|192\.168\.[0-9.]+|172\.(?:1[6-9]|2[0-9]|3[0-1])\.[0-9.]+)\)/);
-        if (m && !m[1].endsWith('.255') && !m[1].endsWith('.0')) {
+        // Skip incomplete ARP entries (offline / dead IPs)
+        if (line.includes('(incomplete)')) continue;
+
+        // Verify valid hardware MAC address is present
+        const hasMac = /at\s+([0-9a-f]{1,2}:[0-9a-f]{1,2}:[0-9a-f]{1,2}:[0-9a-f]{1,2}:[0-9a-f]{1,2}:[0-9a-f]{1,2})/i.test(line);
+        if (!hasMac) continue;
+
+        const m = line.match(/\(([0-9.]+)\)/);
+        if (m && !m[1].endsWith('.255') && !m[1].endsWith('.0') && m[1] !== '224.0.0.251' && m[1] !== '239.255.255.250') {
           ips.push(m[1]);
         }
       }
     } catch (_e) {}
-    return ips;
+    return [...new Set(ips)];
   }
 
   /**
@@ -365,6 +458,7 @@ class CameraDiscoveryBot extends BaseBot {
             isWifi: name === 'en0' || name.startsWith('wlan') || name.startsWith('wi'),
             ip: addr.address,
             netmask: addr.netmask,
+            broadcast: `${baseSubnet}.255`,
             cidr: addr.netmask === '255.255.0.0' ? `${parts[0]}.${parts[1]}.0.0/16` : `${baseSubnet}.0/24`,
             baseSubnet
           });
@@ -380,6 +474,7 @@ class CameraDiscoveryBot extends BaseBot {
         isWifi: false,
         ip: `${customBase}.1`,
         netmask: '255.255.255.0',
+        broadcast: `${customBase}.255`,
         cidr: `${customBase}.0/24`,
         baseSubnet: customBase
       });
@@ -389,69 +484,75 @@ class CameraDiscoveryBot extends BaseBot {
   }
 
   /**
-   * Generate candidate IP list across Wi-Fi ARP neighbors + local subnet + camera factory defaults
+   * Generate candidate IP list across all active subnets, ARP neighbors, and factory defaults
+   * Filters out the host machine's own IP address
    */
   _generateCandidateIpList(subnets) {
-    const ips = new Set();
-    const primary = subnets[0];
+    const hostIps = new Set(['127.0.0.1', 'localhost']);
+    const orderedIps = new Set();
 
-    // 1. Include previously registered cameras from database
-    try {
-      const { getDatabase } = require('../db/database');
-      const db = getDatabase();
-      const existing = db.getCameras('ORG-DEFAULT');
-      for (const cam of existing) {
-        const m = (cam.stream_url || '').match(/@([^:/]+)/);
-        if (m && net.isIPv4(m[1])) ips.add(m[1]);
+    // 1. Harvest ARP neighbors across all detected interfaces
+    for (const subnet of subnets) {
+      if (subnet.ip) hostIps.add(subnet.ip);
+      const arpNeighbors = this._getArpNeighbors(subnet.interfaceName || 'en0');
+      for (const ip of arpNeighbors) {
+        if (!hostIps.has(ip)) orderedIps.add(ip);
       }
-    } catch (_e) {}
-
-    // 2. Wi-Fi ARP neighbors (filtered & bounded to prevent campus ARP flooding)
-    const arpNeighbors = this._getArpNeighbors(primary ? primary.interfaceName : 'en0');
-    if (primary) {
-      const pParts = primary.ip.split('.');
-      const classBPrefix = `${pParts[0]}.${pParts[1]}.`;
-      const classCPrefix = `${pParts[0]}.${pParts[1]}.${pParts[2]}.`;
-
-      const classC = arpNeighbors.filter(ip => ip.startsWith(classCPrefix));
-      const classB = arpNeighbors.filter(ip => ip.startsWith(classBPrefix) && !ip.startsWith(classCPrefix));
-      const others = arpNeighbors.filter(ip => !ip.startsWith(classBPrefix));
-
-      classC.forEach(ip => ips.add(ip));
-      classB.slice(0, 50).forEach(ip => ips.add(ip));
-      others.slice(0, 20).forEach(ip => ips.add(ip));
-
-      // Local /24 subnet addresses (1..254)
-      for (let i = 1; i <= 254; i++) {
-        ips.add(`${primary.baseSubnet}.${i}`);
-      }
-    } else {
-      arpNeighbors.slice(0, 80).forEach(ip => ips.add(ip));
     }
 
-    // 3. Common factory defaults for major CCTV brands
-    const factoryDefaults = [
-      '192.168.1.64',   // Hikvision Default
-      '192.168.1.108',  // Dahua Default
-      '192.168.0.100',  // Generic IP Camera
-      '192.168.1.100',  // Generic IP Camera
-      '192.168.1.10',   // Uniview Default
-      '192.168.0.10',   // CP Plus Default
-      '192.168.1.20',   // Axis Default
-      '192.168.1.250'   // Tapo/Kasa AP
+    // 2. High-probability camera factory defaults
+    const CAMERA_FACTORY_DEFAULTS = [
+      '192.168.1.64', '192.168.0.64', '192.168.1.108', '192.168.0.108',
+      '192.168.1.10', '192.168.1.200', '192.168.1.250', '192.168.1.100',
+      '192.168.0.100', '192.168.1.1', '192.168.0.1',
+      '192.168.137.26', '192.168.137.251', '192.168.137.1',
+      '192.168.43.1', '192.168.43.2', '172.20.10.1', '172.20.10.2'
     ];
+    for (const defIp of CAMERA_FACTORY_DEFAULTS) {
+      if (!hostIps.has(defIp)) orderedIps.add(defIp);
+    }
 
-    factoryDefaults.forEach(ip => ips.add(ip));
+    // 3. Append full /24 subnet addresses (1..254) for every detected subnet
+    for (const subnet of subnets) {
+      if (subnet.baseSubnet) {
+        for (let i = 1; i <= 254; i++) {
+          const ip = `${subnet.baseSubnet}.${i}`;
+          if (!hostIps.has(ip)) orderedIps.add(ip);
+        }
+      }
+    }
 
-    return Array.from(ips);
+    // 4. Also scan top IP endpoints from common alternate camera & hotspot subnets
+    const detectedBases = new Set(subnets.map(s => s.baseSubnet));
+    const ALTERNATE_SUBNETS = ['192.168.0', '192.168.137', '192.168.43', '172.20.10'];
+    for (const altBase of ALTERNATE_SUBNETS) {
+      if (!detectedBases.has(altBase)) {
+        for (let i = 1; i <= 20; i++) {
+          orderedIps.add(`${altBase}.${i}`);
+        }
+        orderedIps.add(`${altBase}.50`);
+        orderedIps.add(`${altBase}.64`);
+        orderedIps.add(`${altBase}.100`);
+        orderedIps.add(`${altBase}.108`);
+        orderedIps.add(`${altBase}.200`);
+        orderedIps.add(`${altBase}.250`);
+        orderedIps.add(`${altBase}.251`);
+      }
+    }
+
+    return Array.from(orderedIps);
   }
 
   /**
-   * ONVIF WS-Discovery Probe via UDP Multicast (239.255.255.250:3702)
+   * Multi-Protocol Discovery via UDP Multicast and Directed Broadcast
+   * Sends ONVIF WS-Discovery, Hikvision SADP, Dahua DHIP, and SSDP probes across:
+   * - 239.255.255.250 (Multicast)
+   * - 255.255.255.255 (Global broadcast)
+   * - Subnet broadcasts (192.168.1.255, etc.)
    */
   async _discoverOnvif(timeoutMs = 1200) {
     return new Promise((resolve) => {
-      const socket = dgram.createSocket('udp4');
+      const socket = dgram.createSocket({ type: 'udp4', reuseAddr: true });
       const devices = [];
       const seenIps = new Set();
 
@@ -473,22 +574,37 @@ class CameraDiscoveryBot extends BaseBot {
   </e:Body>
 </e:Envelope>`;
 
+      const sadpProbe = Buffer.from('<?xml version="1.0" encoding="utf-8"?><Probe><Uuid>AD5256A7-7CF4-4e44-B521-E1430F9CA6EA</Uuid><Types>inquiry</Types></Probe>');
+      const dahuaProbe = Buffer.from([
+        0x20, 0x00, 0x00, 0x00, 0x44, 0x48, 0x49, 0x50,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00
+      ]);
+      const ssdpProbe = Buffer.from(
+        'M-SEARCH * HTTP/1.1\r\n' +
+        'HOST: 239.255.255.250:1900\r\n' +
+        'MAN: "ssdp:discover"\r\n' +
+        'MX: 2\r\n' +
+        'ST: ssdp:all\r\n\r\n'
+      );
+
       const timer = setTimeout(() => {
         try { socket.close(); } catch (_e) {}
         resolve(devices);
       }, timeoutMs);
 
       socket.on('message', (msg, rinfo) => {
-        const msgStr = msg.toString();
-        if (msgStr.includes('ProbeMatches') || msgStr.includes('NetworkVideoTransmitter')) {
-          if (!seenIps.has(rinfo.address)) {
-            seenIps.add(rinfo.address);
+        const msgStr = msg.toString('utf8');
+        const ip = rinfo.address;
+        if (!seenIps.has(ip)) {
+          if (msgStr.includes('ProbeMatches') || msgStr.includes('NetworkVideoTransmitter')) {
+            seenIps.add(ip);
             const brandMatch = msgStr.match(/name\/([^\s<"'/]+)/i);
             const modelMatch = msgStr.match(/hardware\/([^\s<"'/]+)/i);
             const brand = brandMatch ? brandMatch[1].replace(/_/g, ' ') : 'Generic ONVIF';
             const model = modelMatch ? modelMatch[1] : '';
 
-            // Extract service port from XAddrs URL if present
             const xaddrMatch = msgStr.match(/<(?:\w+:)?XAddrs>([^<]+)<\/(?:\w+:)?XAddrs>/i);
             let servicePort = null;
             if (xaddrMatch) {
@@ -501,12 +617,46 @@ class CameraDiscoveryBot extends BaseBot {
             }
 
             devices.push({
-              ip: rinfo.address,
+              ip,
               port: servicePort || 554,
               servicePort,
               protocol: 'ONVIF',
               brand: brand + (model ? ` (${model})` : '')
             });
+          } else if (msgStr.includes('<ProbeMatch>') || msgStr.includes('Hikvision') || msgStr.includes('<DeviceDescription>')) {
+            seenIps.add(ip);
+            const portMatch = msgStr.match(/<HttpPort>(\d+)<\/HttpPort>/i);
+            const devPort = portMatch ? parseInt(portMatch[1], 10) : 80;
+            devices.push({
+              ip,
+              port: 554,
+              servicePort: devPort,
+              protocol: 'Hikvision-SADP',
+              brand: 'Hikvision / Hilook'
+            });
+          } else if (msg.length >= 8 && msg.slice(4, 8).toString() === 'DHIP') {
+            seenIps.add(ip);
+            devices.push({
+              ip,
+              port: 554,
+              servicePort: 37777,
+              protocol: 'Dahua-DHIP',
+              brand: 'Dahua / CP Plus'
+            });
+          } else if (msgStr.includes('LOCATION:') || msgStr.includes('location:') || msgStr.includes('camera') || msgStr.includes('IP Webcam')) {
+            const locMatch = msgStr.match(/location:\s*http:\/\/([0-9.]+):(\d+)/i);
+            const devPort = locMatch ? parseInt(locMatch[2], 10) : 8080;
+            const devIp = locMatch ? locMatch[1] : ip;
+            if (!seenIps.has(devIp)) {
+              seenIps.add(devIp);
+              devices.push({
+                ip: devIp,
+                port: devPort,
+                servicePort: devPort,
+                protocol: 'SSDP-UPnP',
+                brand: 'IP Camera / Mobile Webcam'
+              });
+            }
           }
         }
       });
@@ -517,12 +667,19 @@ class CameraDiscoveryBot extends BaseBot {
         resolve(devices);
       });
 
-      socket.bind(() => {
+      socket.bind(0, () => {
         try {
           socket.setBroadcast(true);
-          socket.setMulticastTTL(2);
-          const buf = Buffer.from(probeXml);
-          socket.send(buf, 0, buf.length, 3702, '239.255.255.250');
+          try { socket.setMulticastTTL(4); } catch (_) {}
+          const onvifBuf = Buffer.from(probeXml);
+
+          const targets = ['239.255.255.250', '255.255.255.255', '192.168.1.255', '192.168.0.255', '192.168.137.255', '192.168.43.255'];
+          for (const target of targets) {
+            socket.send(onvifBuf, 0, onvifBuf.length, 3702, target, () => {});
+            socket.send(sadpProbe, 0, sadpProbe.length, 37020, target, () => {});
+            socket.send(dahuaProbe, 0, dahuaProbe.length, 37810, target, () => {});
+            socket.send(ssdpProbe, 0, ssdpProbe.length, 1900, target, () => {});
+          }
         } catch (_err) {
           clearTimeout(timer);
           try { socket.close(); } catch (_e) {}
@@ -533,75 +690,170 @@ class CameraDiscoveryBot extends BaseBot {
   }
 
   /**
-   * Scan candidate IPs for open camera ports concurrently
+   * Ultra-Fast 2-Phase Port Scanner:
+   * Phase 1: Rapid Sweep across candidate IPs on high-probability camera ports (~1.5s total)
+   * Phase 2: Deep Port Sweep on detected alive hosts across all CCTV ports (~0.5s total)
    */
-  async _scanCandidatePorts(ips, onProgress, onvifMap = new Map()) {
+  async _scanCandidatePorts(ips, onProgress, onvifMap = new Map(), customTargetPort = null) {
     const openHosts = [];
-    const portsToScan = COMMON_CAMERA_PORTS;
-    let completedChecks = 0;
+    const openHostKeys = new Set();
+    const aliveIps = new Set();
 
-    const targets = [];
-    const seenTargets = new Set();
+    // High probability camera ports for initial sweep (CCTV, NVR, DVR, IP Webcam, DroidCam)
+    const PRIMARY_CAMERA_PORTS = [
+      554, 8554, 8000, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8088, 8888,
+      5000, 5556, 4747, 5856, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 18080,
+      8200, 9000, 10554, 1935, 2020, 443, 8899, 6667, 7080, 7447, 8443, 9090,
+      2563, 8082, 8083, 8085, 8090, 8181, 8880, 7070, 7777, 8889, 9999, 10000
+    ];
 
-    for (const ip of ips) {
-      const ports = new Set(portsToScan);
-      const onvifDev = onvifMap.get(ip);
-      if (onvifDev && onvifDev.servicePort) {
-        ports.add(onvifDev.servicePort);
-      }
-      for (const port of ports) {
-        const key = `${ip}:${port}`;
-        if (!seenTargets.has(key)) {
-          seenTargets.add(key);
-          targets.push({ ip, port });
+    // Dynamically harvest any port from previously saved cameras in database
+    try {
+      const { getDatabase } = require('../db/database');
+      const db = getDatabase();
+      const savedCams = db.getCameras ? db.getCameras(this.targetOrgId || 'ORG-DEFAULT') : [];
+      for (const cam of savedCams) {
+        if (cam.stream_url) {
+          try {
+            const u = new URL(cam.stream_url);
+            if (u.port) {
+              const p = parseInt(u.port, 10);
+              if (!PRIMARY_CAMERA_PORTS.includes(p)) PRIMARY_CAMERA_PORTS.unshift(p);
+            }
+          } catch (_) {}
         }
+      }
+    } catch (_) {}
+
+    if (customTargetPort && !PRIMARY_CAMERA_PORTS.includes(customTargetPort)) {
+      PRIMARY_CAMERA_PORTS.unshift(customTargetPort);
+    }
+
+    // Any host from ONVIF discovery is already alive
+    for (const [onvifIp] of onvifMap.entries()) {
+      aliveIps.add(onvifIp);
+    }
+
+    // High-priority devices (ARP neighbors & ONVIF devices) get all 45 ports
+    const arpSet = new Set(this._getArpNeighbors());
+    for (const [onvifIp] of onvifMap.entries()) arpSet.add(onvifIp);
+
+    // Common top ports for general subnet IP sweep
+    const QUICK_SUBSET_PORTS = [
+      554, 8000, 37777, 34567, 80, 8080, 5000, 8554, 4747, 2563, 1025, 1029, 8888, 1935, 8899
+    ];
+
+    // Step 1: Rapid Phase 1 Sweep across candidate IPs
+    const phase1Targets = [];
+    for (const ip of ips) {
+      const isHighPriority = arpSet.has(ip);
+      const portsToScan = isHighPriority ? PRIMARY_CAMERA_PORTS : QUICK_SUBSET_PORTS;
+      for (const port of portsToScan) {
+        phase1Targets.push({ ip, port });
       }
     }
 
-    const totalChecks = targets.length;
-    const concurrency = this.config.maxConcurrentSockets || 25;
+    const concurrency = Math.max(100, this.config.maxConcurrentSockets || 120);
+    const sweepTimeout = 200;
+    let completedPhase1 = 0;
 
-    // Process targets in concurrent chunks
-    for (let i = 0; i < targets.length; i += concurrency) {
+    for (let i = 0; i < phase1Targets.length; i += concurrency) {
       if (this.stopRequested) break;
 
-      const chunk = targets.slice(i, i + concurrency);
+      const chunk = phase1Targets.slice(i, i + concurrency);
       await Promise.all(chunk.map(async ({ ip, port }) => {
-        const isOpen = await this._checkPortOpen(ip, port, this.config.socketTimeoutMs);
-        completedChecks++;
-        
-        let foundHost = null;
+        const isOpen = await this._checkPortOpen(ip, port, sweepTimeout);
+        completedPhase1++;
+
         if (isOpen) {
-          let service = 'Unknown';
-          if (port === 554) service = 'RTSP Media';
-          else if (port >= 1024 && port <= 1040) service = 'IP Webcam / RTSP Media';
-          else if (port === 8554) service = 'RTSP Media Alternative';
-          else if (port === 8000) service = 'Hikvision SDK/Media';
-          else if (port === 37777) service = 'Dahua Media';
-          else if (port === 80 || port === 8080 || port === 8081) service = 'Camera Web Admin';
+          aliveIps.add(ip);
+          const key = `${ip}:${port}`;
+          if (!openHostKeys.has(key)) {
+            openHostKeys.add(key);
+            let service = 'Camera Media / HTTP';
+            if (port === 554) service = 'RTSP Media';
+            else if (port === 5856 || port === 4747) service = 'IP Webcam / Phone Stream';
+            else if (port === 8554) service = 'RTSP Media Alternative';
+            else if (port === 8000) service = 'Hikvision SDK/Media';
+            else if (port === 37777) service = 'Dahua Media';
+            else if (port === 34567) service = 'XM/NetSurveillance Media';
+            else if (port === 80 || port === 8080 || port === 8081) service = 'Camera Web Admin / MJPEG';
 
-          const onvifDev = onvifMap.get(ip);
-          foundHost = {
-            ip,
-            port,
-            service,
-            brand: onvifDev ? onvifDev.brand : (port >= 1024 && port <= 1040 ? 'IP Webcam' : null)
-          };
-          openHosts.push(foundHost);
+            const onvifDev = onvifMap.get(ip);
+            const foundHost = {
+              ip,
+              port,
+              service,
+              brand: onvifDev ? onvifDev.brand : (port === 5856 || port === 4747 ? 'IP Webcam' : 'Camera')
+            };
+            openHosts.push(foundHost);
+            if (onProgress) onProgress(35, foundHost);
+          }
         }
-
-        const percent = (completedChecks / Math.max(1, totalChecks)) * 100;
-        if (onProgress) onProgress(percent, foundHost);
       }));
+
+      const pct = Math.round((completedPhase1 / Math.max(1, phase1Targets.length)) * 40);
+      if (onProgress) onProgress(pct, null);
     }
 
+    // Step 2: Phase 2 Deep Sweep on Alive Hosts across all COMMON_CAMERA_PORTS
+    const targetAlive = Array.from(aliveIps);
+    const allPortsToProbe = customTargetPort ? [customTargetPort, ...COMMON_CAMERA_PORTS] : COMMON_CAMERA_PORTS;
+    const phase2Targets = [];
+
+    for (const ip of targetAlive) {
+      for (const port of allPortsToProbe) {
+        const key = `${ip}:${port}`;
+        if (!openHostKeys.has(key)) {
+          phase2Targets.push({ ip, port });
+        }
+      }
+    }
+
+    if (phase2Targets.length > 0) {
+      for (let i = 0; i < phase2Targets.length; i += concurrency) {
+        if (this.stopRequested) break;
+
+        const chunk = phase2Targets.slice(i, i + concurrency);
+        await Promise.all(chunk.map(async ({ ip, port }) => {
+          const isOpen = await this._checkPortOpen(ip, port, 400);
+          if (isOpen) {
+            const key = `${ip}:${port}`;
+            if (!openHostKeys.has(key)) {
+              openHostKeys.add(key);
+              let service = 'Camera Media / HTTP';
+              if (port === 554) service = 'RTSP Media';
+              else if (port === 5856 || port === 4747) service = 'IP Webcam / Phone Stream';
+              else if (port >= 1024 && port <= 1040) service = 'IP Webcam / RTSP Media';
+              else if (port === 8554) service = 'RTSP Media Alternative';
+              else if (port === 8000) service = 'Hikvision SDK/Media';
+              else if (port === 37777) service = 'Dahua Media';
+              else if (port === 34567) service = 'XM Media';
+              else if (port === 80 || port === 8080 || port === 8081) service = 'Camera Web Admin / MJPEG';
+
+              const onvifDev = onvifMap.get(ip);
+              const foundHost = {
+                ip,
+                port,
+                service,
+                brand: onvifDev ? onvifDev.brand : (port === 5856 || (port >= 1024 && port <= 1040) ? 'IP Webcam' : 'Camera')
+              };
+              openHosts.push(foundHost);
+              if (onProgress) onProgress(50, foundHost);
+            }
+          }
+        }));
+      }
+    }
+
+    if (onProgress) onProgress(60, null);
     return openHosts;
   }
 
   /**
    * Fast TCP port check using raw socket
    */
-  _checkPortOpen(host, port, timeoutMs = 600) {
+  _checkPortOpen(host, port, timeoutMs = 250) {
     return new Promise((resolve) => {
       const socket = new net.Socket();
       socket.setTimeout(timeoutMs);
@@ -626,121 +878,189 @@ class CameraDiscoveryBot extends BaseBot {
   }
 
   /**
-   * Test manufacturer RTSP stream paths with user credentials on open hosts
+   * Parallel RTSP & HTTP Stream Handshake across all open candidate hosts
+   * Uses Promise.any to test all RTSP paths concurrently for sub-second verification
    */
   async _probeStreamPaths(openHosts) {
     const matched = [];
-    const seenUrls = new Set();
+    const unverified = [];
     const { username, password } = this.targetCredentials;
 
-    // Filter hosts to media/RTSP endpoints (excluding pure HTTP web admin ports like 80/8080 from direct RTSP DESCRIBE)
-    const rtspHosts = openHosts.filter(h => {
-      if (h.port === 80 || h.port === 8080 || h.port === 8081 || h.port === 443) return false;
-      return (
-        h.port === 554 || 
-        h.port === 8554 || 
-        h.port === 8000 || 
-        (h.port >= 1024 && h.port <= 1040) ||
-        Boolean(h.brand) || 
-        (h.service && (
-          h.service.toLowerCase().includes('rtsp') || 
-          h.service.toLowerCase().includes('webcam') || 
-          h.service.toLowerCase().includes('media')
-        ))
-      );
-    });
-    
-    // If no explicit RTSP port open but HTTP 80/8080/8081 open, also test standard port 554 on that IP
-    const httpIps = openHosts.filter(h => h.port === 80 || h.port === 8080 || h.port === 8081).map(h => h.ip);
-    for (const ip of httpIps) {
-      if (!rtspHosts.some(h => h.ip === ip)) {
-        rtspHosts.push({ ip, port: 554, service: 'RTSP (Inferred)' });
-      }
-    }
+    const RTSP_PORTS = new Set([
+      554, 8554, 8000, 37777, 34567, 9559, 9527, 5556, 18080, 8200, 9000,
+      10554, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 4747, 5856, 8888, 1935, 2020
+    ]);
+    const HTTP_ONLY_PORTS = new Set([80, 443, 8080, 8081, 8088, 5000, 5800, 3000, 3001, 6000, 7000]);
+
+    const RTSP_PATHS = [
+      '/Streaming/Channels/101', '/cam/realmonitor?channel=1&subtype=0',
+      '/h264Preview_01_main', '/live', '/stream1', '/ch0', '/onvif1',
+      '/h264_pcm.sdp', '/', '/ch01/0', '/unicast/c1/s0/live',
+      '/Streaming/Channels/1', '/h264/ch1/main/av_stream',
+      '/h264Preview_01_sub', '/stream2', '/onvif2', '/media/video1', '/video1'
+    ];
 
     let progressIndex = 0;
-    const totalProbes = rtspHosts.length * STREAM_PATTERNS.length;
+    const totalHosts = Math.max(1, openHosts.length);
 
-    for (const host of rtspHosts) {
-      if (this.stopRequested) break;
+    await Promise.all(openHosts.map(async (host) => {
+      if (this.stopRequested) return;
 
       this.emitUpdate('STEP', {
-        message: `Testing stream paths against ${host.ip}:${host.port} (${host.service}${host.brand ? ' - ' + host.brand : ''})...`
+        message: `Testing stream protocols against ${host.ip}:${host.port}...`
       });
 
-      // Prioritize stream patterns based on detected host brand/service for instant matching
-      const hostBrand = (host.brand || '').toLowerCase();
-      const hostService = (host.service || '').toLowerCase();
-      const isWebcam = hostBrand.includes('webcam') || hostService.includes('webcam') || (host.port >= 1024 && host.port <= 1040);
-      const isDahua = hostBrand.includes('plus') || hostBrand.includes('dahua') || host.port === 37777;
-      const isHikvision = hostBrand.includes('hikvision') || hostBrand.includes('hilook') || host.port === 8000;
-      const isUniview = hostBrand.includes('uniview') || hostBrand.includes('unv');
-      const isTapo = hostBrand.includes('tapo') || hostBrand.includes('tp-link');
+      let hostMatched = false;
+      let hostAuthFailed = false;
 
-      const prioritizedPatterns = [...STREAM_PATTERNS].sort((a, b) => {
-        if (isWebcam) {
-          if (a.brand === 'IP Webcam' && b.brand !== 'IP Webcam') return -1;
-          if (b.brand === 'IP Webcam' && a.brand !== 'IP Webcam') return 1;
-        } else if (isDahua) {
-          const aDahua = a.brand.includes('CP Plus') || a.brand.includes('Dahua');
-          const bDahua = b.brand.includes('CP Plus') || b.brand.includes('Dahua');
-          if (aDahua && !bDahua) return -1;
-          if (bDahua && !aDahua) return 1;
-        } else if (isHikvision) {
-          if (a.brand === 'Hikvision' && b.brand !== 'Hikvision') return -1;
-          if (b.brand === 'Hikvision' && a.brand !== 'Hikvision') return 1;
-        } else if (isUniview) {
-          if (a.brand === 'Uniview' && b.brand !== 'Uniview') return -1;
-          if (b.brand === 'Uniview' && a.brand !== 'Uniview') return 1;
-        } else if (isTapo) {
-          if (a.brand === 'TP-Link Tapo' && b.brand !== 'TP-Link Tapo') return -1;
-          if (b.brand === 'TP-Link Tapo' && a.brand !== 'TP-Link Tapo') return 1;
-        }
-        return 0;
-      });
+      const tasks = [];
 
-      for (const pattern of prioritizedPatterns) {
-        if (this.stopRequested) break;
-
-        progressIndex++;
-        this.currentProgress = Math.min(98, Math.round(60 + (progressIndex / Math.max(1, totalProbes)) * 38));
-
-        const probePort = host.port || pattern.port || 554;
-        const testUrl = `rtsp://${host.ip}:${probePort}${pattern.path}`;
-        if (seenUrls.has(testUrl)) continue;
-        seenUrls.add(testUrl);
-
-        const result = await this._testRtspHandshake(host.ip, probePort, pattern.path, username, password);
-
-        if (result.success) {
-          const authRtspUrl = `rtsp://${encodeURIComponent(username)}:${encodeURIComponent(password)}@${host.ip}:${probePort}${pattern.path}`;
-          const cameraInfo = {
-            id: `CAM_${host.ip.replace(/\./g, '_')}_${probePort}`,
-            ip: host.ip,
-            port: probePort,
-            path: pattern.path,
-            brand: host.brand || pattern.brand,
-            description: pattern.desc,
-            rtspUrl: authRtspUrl,
-            rawRtspUrl: testUrl,
-            authType: result.authType,
-            latencyMs: result.latencyMs,
-            detectedAt: new Date().toISOString()
-          };
-
-          matched.push(cameraInfo);
-          this.emitUpdate('CAMERA_MATCHED', {
-            message: `🎯 Verified ${cameraInfo.brand} stream at ${testUrl}!`,
-            camera: cameraInfo
-          });
-
-          // If we found a working main stream for this host, don't spam other paths on the same host
-          break;
+      // 1. Parallel RTSP Probe (all camera media ports except plain web 80/443)
+      const tryRtsp = host.port !== 80 && host.port !== 443;
+      if (tryRtsp) {
+        const pre = await this._testRtspHandshake(host.ip, host.port, '/Streaming/Channels/101', username, password);
+        if (pre.success) {
+          tasks.push(Promise.resolve({ type: 'RTSP', path: '/Streaming/Channels/101', result: pre }));
+        } else if (pre.status === 'AUTH_FAILED') {
+          hostAuthFailed = true;
+        } else if (pre.isRtsp) {
+          const rtspTask = Promise.any(
+            RTSP_PATHS.slice(1).map(path =>
+              this._testRtspHandshake(host.ip, host.port, path, username, password)
+                .then(r => {
+                  if (r.success) return { type: 'RTSP', path, result: r };
+                  if (r.status === 'AUTH_FAILED') { hostAuthFailed = true; }
+                  return Promise.reject(new Error('not matched'));
+                })
+            )
+          ).catch(() => null);
+          tasks.push(rtspTask);
         }
       }
-    }
 
-    return matched;
+      // 2. Concurrent HTTP / MJPEG Probe
+      const httpTask = this._testHttpHandshake(host.ip, host.port, '/video', username, password)
+        .then(r => {
+          if (r.success) return { type: 'HTTP_MJPEG', path: r.path || '/video', result: r };
+          if (r.status === 'AUTH_FAILED') hostAuthFailed = true;
+          return null;
+        }).catch(() => null);
+      tasks.push(httpTask);
+
+      // Await first matching protocol
+      const results = await Promise.all(tasks);
+      const firstSuccess = results.find(r => r !== null);
+
+      if (firstSuccess) {
+        const authPart = (username || password) ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : '';
+        const camId = `CAM_${host.ip.replace(/\./g, '_')}_${host.port}`;
+        let cameraInfo = null;
+
+        if (firstSuccess.type === 'RTSP') {
+          const authRtspUrl = `rtsp://${authPart}${host.ip}:${host.port}${firstSuccess.path}`;
+          const displayUrl = `rtsp://${host.ip}:${host.port}${firstSuccess.path}`;
+          cameraInfo = {
+            id: camId,
+            ip: host.ip,
+            port: host.port,
+            path: firstSuccess.path,
+            brand: host.brand || 'CCTV Camera',
+            description: 'Live RTSP Stream',
+            streamType: 'RTSP',
+            rtspUrl: `/api/cameras/${camId}/stream.mjpg`,
+            rawRtspUrl: displayUrl,
+            displayUrl,
+            _internalAuthUrl: authRtspUrl,
+            authType: firstSuccess.result.authType || 'Digest',
+            latencyMs: firstSuccess.result.latencyMs || 50,
+            status: 'Connected',
+            detectedAt: new Date().toISOString()
+          };
+        } else {
+          const usedPath = firstSuccess.path || '/video';
+          const internalAuth = `http://${authPart}${host.ip}:${host.port}${usedPath}`;
+          const rawUrl = `http://${host.ip}:${host.port}${usedPath}`;
+          cameraInfo = {
+            id: camId,
+            ip: host.ip,
+            port: host.port,
+            path: usedPath,
+            brand: host.brand || 'IP Webcam',
+            description: 'Live MJPEG Stream',
+            streamType: 'HTTP_MJPEG',
+            rtspUrl: `/api/cameras/${camId}/stream.mjpg`,
+            rawRtspUrl: rawUrl,
+            displayUrl: rawUrl,
+            _internalAuthUrl: internalAuth,
+            authType: firstSuccess.result.authType || 'Digest',
+            latencyMs: firstSuccess.result.latencyMs || 50,
+            status: 'Connected',
+            detectedAt: new Date().toISOString()
+          };
+        }
+
+        // Register into SQLite
+        try {
+          const { getDatabase } = require('../db/database');
+          const db = getDatabase();
+          const orgId = this.targetOrgId || 'ORG-DEFAULT';
+          db.registerCamera(orgId, {
+            id: camId,
+            name: `${cameraInfo.brand || 'Camera'} (${host.ip}:${host.port})`,
+            stream_url: cameraInfo._internalAuthUrl,
+            zone_name: 'SALES_FLOOR'
+          });
+        } catch (_e) {}
+
+        matched.push(cameraInfo);
+        hostMatched = true;
+        this.emitUpdate('CAMERA_MATCHED', {
+          message: `Verified camera stream for ${cameraInfo.brand} (${host.ip}:${host.port})`,
+          camera: cameraInfo
+        });
+      }
+
+      progressIndex++;
+      this.currentProgress = Math.min(98, Math.round(60 + (progressIndex / totalHosts) * 38));
+
+      if (!hostMatched) {
+        unverified.push({
+          ip: host.ip,
+          port: host.port,
+          brand: host.brand || 'Camera Device',
+          status: hostAuthFailed ? 'Authentication failed' : 'Unsupported',
+          reason: hostAuthFailed ? 'Camera detected, but authentication failed.' : 'Device detected but the camera protocol is not supported.'
+        });
+      }
+    }));
+
+    return { matched, unverified };
+  }
+
+  /**
+   * Fast HTTP handshake for MJPEG / snapshot camera endpoints (Supports Basic & Digest Auth)
+   */
+  async _testHttpHandshake(host, port, path, username, password) {
+    const { probeHttpCamera } = require('../services/http_camera_client');
+    const startTime = Date.now();
+    try {
+      const res = await probeHttpCamera(host, port, username, password, 2500);
+      if (res.success) {
+        return {
+          success: true,
+          authType: res.authType || 'Digest',
+          latencyMs: Date.now() - startTime,
+          contentType: 'multipart/x-mixed-replace',
+          path: res.path || path
+        };
+      }
+      if (res.status === 'AUTH_FAILED') {
+        return { success: false, status: 'AUTH_FAILED', reason: '401 Unauthorized (wrong credentials)' };
+      }
+      return { success: false, status: res.status || 'UNSUPPORTED', reason: res.reason || 'Probe failed' };
+    } catch (err) {
+      return { success: false, status: 'ERROR', reason: err.message };
+    }
   }
 
   /**
@@ -788,10 +1108,13 @@ class CameraDiscoveryBot extends BaseBot {
         // Wait until we have a complete RTSP response (header ends with \r\n\r\n)
         if (!responseBuffer.includes('\r\n\r\n')) return;
 
+        const speaksRtsp = responseBuffer.includes('RTSP/');
+
         // === Check for 200 OK at any phase ===
-        if (responseBuffer.includes('RTSP/1.0 200')) {
+        if (responseBuffer.includes('RTSP/1.0 200') || responseBuffer.includes('RTSP/2.0 200')) {
           finish({
             success: true,
+            isRtsp: true,
             authType: authPhase === 'digest' ? 'Digest' : (authPhase === 'basic' ? 'Basic' : 'None'),
             latencyMs: Date.now() - startTime
           });
@@ -855,24 +1178,27 @@ class CameraDiscoveryBot extends BaseBot {
         // === Phase: After Digest or Basic retry ===
         if (authPhase === 'digest' || authPhase === 'basic') {
           if (responseBuffer.includes('401')) {
-            finish({ success: false, reason: `401 Unauthorized after ${authPhase} auth (wrong credentials)` });
+            finish({ success: false, isRtsp: speaksRtsp, status: 'AUTH_FAILED', reason: `401 Unauthorized after ${authPhase} auth (wrong credentials)` });
           } else {
-            // 404, 403, 500 etc.
-            finish({ success: false, reason: `Non-200 after ${authPhase} auth` });
+            finish({ success: false, isRtsp: speaksRtsp, status: 'UNSUPPORTED', reason: `Non-200 after ${authPhase} auth` });
           }
           return;
         }
 
         // === Fallback: any other initial non-200 non-401 ===
-        finish({ success: false, reason: 'Non-200/401 response' });
+        finish({ success: false, isRtsp: speaksRtsp, status: 'UNSUPPORTED', reason: 'Non-200/401 response' });
       });
 
       socket.on('timeout', () => {
-        finish({ success: false, reason: 'Timeout' });
+        finish({ success: false, status: 'UNREACHABLE', reason: 'Timeout' });
       });
 
-      socket.on('error', () => {
-        finish({ success: false, reason: 'Connection error' });
+      socket.on('close', () => {
+        finish({ success: false, isRtsp: false, status: 'UNSUPPORTED', reason: 'Socket closed' });
+      });
+
+      socket.on('error', (err) => {
+        finish({ success: false, status: 'ERROR', reason: err.message || 'Connection error' });
       });
 
       socket.connect(port, host);
@@ -891,7 +1217,8 @@ class CameraDiscoveryBot extends BaseBot {
       discoveredHostsCount: this.discoveredHosts.length,
       discoveredHosts: this.discoveredHosts,
       matchedCamerasCount: this.matchedCameras.length,
-      matchedCameras: this.matchedCameras,
+      matchedCameras: this.matchedCameras.map(c => this._sanitizeCamera(c)),
+      unverifiedDevices: this.unverifiedDevices,
       logs: this.logs.slice(-50)
     };
   }

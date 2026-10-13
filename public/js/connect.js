@@ -52,64 +52,90 @@
       : '▼ Advanced: Specific IP or Subnet Scope (Optional)';
   });
 
-  // Hardcoded known cameras on the network
-  const KNOWN_CAMERAS = [
-    {
-      id: 'CAM_192_168_137_251_1029',
-      ip: '192.168.137.251',
-      port: 1029,
-      brand: 'IP Webcam',
-      service: 'HTTP Video Stream',
-      description: 'IP Webcam (Android)',
-      rawUrl: 'http://CEOVA:ceova1234@192.168.137.251:1029/video',
-      streamUrl: '/api/proxy-stream?url=' + encodeURIComponent('http://CEOVA:ceova1234@192.168.137.251:1029/video')
-    },
-    {
-      id: 'CAM_192_168_137_26_8080',
-      ip: '192.168.137.26',
-      port: 8080,
-      brand: 'IP Webcam',
-      service: 'HTTP Video Stream',
-      description: 'IP Webcam (Android)',
-      rawUrl: 'http://CEOVA:ceova1234@192.168.137.26:8080/video',
-      streamUrl: '/api/proxy-stream?url=' + encodeURIComponent('http://CEOVA:ceova1234@192.168.137.26:8080/video')
-    }
-  ];
-
-  // Form Submit: Show hardcoded cameras instantly (no network scan needed)
-  form.addEventListener('submit', (e) => {
+  // Form Submit: Test target IP directly or launch autonomous bot scan
+  form.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (isScanning) return;
 
+    const username = inputUsername.value.trim();
+    const password = inputPassword.value || '';
+    const targetIp = inputTargetIp?.value.trim() || null;
+    const subnetHint = inputSubnetHint?.value.trim() || null;
+
+    if (!username) {
+      appendTerminalLine('Please enter your CCTV / NVR username.', 'error');
+      return;
+    }
+
     setScanningState(true);
-    appendTerminalLine('Scanning local network for active camera streams...', 'host');
-    updateProgress(10);
-    scanStatusText.textContent = 'SWEEPING CAMERA PORTS...';
 
-    // Simulate scan progress then show results
-    setTimeout(() => {
-      appendTerminalLine('Probing 192.168.137.0/24 subnet...', 'host');
-      updateProgress(35);
-    }, 400);
+    if (targetIp) {
+      appendTerminalLine(`Initiating direct connection test to ${targetIp}...`, 'host');
+      updateProgress(30);
+      scanStatusText.textContent = `TESTING CAMERA AT ${targetIp}...`;
 
-    setTimeout(() => {
-      appendTerminalLine('Port 1029 open on 192.168.137.251 — Camera service detected!', 'host');
-      updateProgress(60);
-      addKnownCameraCard(KNOWN_CAMERAS[0]);
-    }, 900);
+      try {
+        const testRes = await fetch('/api/cameras/test-connect', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ target: targetIp, username, password })
+        });
+        const testData = await testRes.json();
 
-    setTimeout(() => {
-      appendTerminalLine('Port 8080 open on 192.168.137.26 — Camera service detected!', 'host');
-      updateProgress(85);
-      addKnownCameraCard(KNOWN_CAMERAS[1]);
-    }, 1400);
+        if (testRes.ok && testData.success) {
+          updateProgress(100);
+          appendTerminalLine(`✓ ${testData.message}`, 'success');
+          scanStatusText.textContent = 'CAMERA VERIFIED & CONNECTED';
+          setScanningState(false);
 
-    setTimeout(() => {
-      appendTerminalLine('✓ Scan complete. 2 camera(s) found on network.', 'success');
-      updateProgress(100);
-      scanStatusText.textContent = 'CAMERA(S) VERIFIED & CONNECTED';
+          const camObj = {
+            id: testData.camera.id,
+            ip: targetIp.split(':')[0],
+            port: targetIp.includes(':') ? parseInt(targetIp.split(':')[1], 10) : 1029,
+            brand: testData.mode === 'HTTP_MJPEG' ? 'IP Webcam' : 'CCTV Camera',
+            description: testData.camera.name,
+            rawRtspUrl: testData.streamUrl,
+            rtspUrl: testData.streamUrl
+          };
+          addMatchedCameraCard(camObj);
+          return;
+        } else {
+          updateProgress(0);
+          appendTerminalLine(`❌ ${testData.error || 'Connection failed'}`, 'error');
+          if (testData.hint) appendTerminalLine(`ℹ️ ${testData.hint}`, 'host');
+          scanStatusText.textContent = 'CAMERA UNREACHABLE - CHECK PHONE';
+          setScanningState(false);
+          return;
+        }
+      } catch (err) {
+        updateProgress(0);
+        appendTerminalLine(`Connection error: ${err.message}`, 'error');
+        scanStatusText.textContent = 'CONNECTION FAILED';
+        setScanningState(false);
+        return;
+      }
+    }
+
+    // Launch Autonomous Network Discovery Bot
+    appendTerminalLine('Starting autonomous network discovery bot...', 'host');
+    updateProgress(5);
+    scanStatusText.textContent = 'SWEEPING LOCAL NETWORK...';
+    initEventStream();
+
+    try {
+      const res = await fetch('/api/cameras/discover', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password, targetIp, subnetHint })
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || 'Failed to start scan');
+      }
+    } catch (err) {
+      appendTerminalLine(`Failed to launch bot: ${err.message}`, 'error');
       setScanningState(false);
-    }, 1900);
+    }
   });
 
   // Stop Scan
@@ -329,13 +355,15 @@
             Active camera service online on your network. Verify credentials below to stream.
           </div>
         </div>
-        <span class="badge" style="background:rgba(56,189,248,0.15); color:#38bdf8; border:1px solid rgba(56,189,248,0.3); font-size:0.7rem; padding:3px 8px; border-radius:6px;">DETECTED</span>
+        <span class="badge" style="background:${host.status === 'Authentication failed' ? 'rgba(245,158,11,0.15)' : 'rgba(56,189,248,0.15)'}; color:${host.status === 'Authentication failed' ? '#f59e0b' : '#38bdf8'}; border:1px solid ${host.status === 'Authentication failed' ? 'rgba(245,158,11,0.3)' : 'rgba(56,189,248,0.3)'}; font-size:0.7rem; padding:3px 8px; border-radius:6px;">
+          ${(host.status || 'DETECTED').toUpperCase()}
+        </span>
       </div>
 
       <div style="display:grid; grid-template-columns: 1fr 1fr 1.2fr auto; gap:8px; align-items:center;">
         <div>
           <label style="display:block; font-size:0.68rem; color:#94a3b8; font-weight:600; margin-bottom:3px; text-transform:uppercase;">Username</label>
-          <input type="text" class="custom-input card-user-input" value="${inputUsername.value.trim() || 'admin'}" placeholder="Username" style="padding:6px 10px; font-size:0.82rem; height:34px; box-sizing:border-box;" />
+          <input type="text" class="custom-input card-user-input" value="${inputUsername.value.trim()}" placeholder="Username" style="padding:6px 10px; font-size:0.82rem; height:34px; box-sizing:border-box;" />
         </div>
         <div>
           <label style="display:block; font-size:0.68rem; color:#94a3b8; font-weight:600; margin-bottom:3px; text-transform:uppercase;">Password</label>
@@ -471,16 +499,7 @@
     });
   }
 
-  // Quick demo / simulate button — show known cameras directly
-  document.getElementById('btnSimulateCamera')?.addEventListener('click', () => {
-    appendTerminalLine('Loading known network cameras...', 'host');
-    setTimeout(() => {
-      KNOWN_CAMERAS.forEach(cam => addKnownCameraCard(cam));
-      appendTerminalLine('✓ 2 camera(s) ready to connect.', 'success');
-      updateProgress(100);
-      scanStatusText.textContent = 'CAMERA(S) VERIFIED & CONNECTED';
-    }, 600);
-  });
+
 
   // Check initial bot status on page load
   fetch('/api/cameras/discover/status')

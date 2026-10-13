@@ -8,9 +8,27 @@
 
 const crypto = require('crypto');
 
-// Private shared secret between Ceova Main App and Ceova CCTV App
-const CEOVA_INTERNAL_SECRET = process.env.CEOVA_INTERNAL_SECRET || 'ceova-internal-secret-production-key-2026';
+// Private shared secret must be provided via environment in production
 const MAX_TIMESTAMP_DRIFT_SEC = 300; // 5 minutes window for replay prevention
+
+function getInternalSecret() {
+  const secret = process.env.CEOVA_INTERNAL_SECRET;
+  if (!secret || typeof secret !== 'string' || secret.trim().length < 16) {
+    return null;
+  }
+  return secret.trim();
+}
+
+/**
+ * Constant-time string comparison to prevent timing attacks
+ */
+function safeStringCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
 
 /**
  * Compute HMAC-SHA256 signature for internal API calls
@@ -26,7 +44,14 @@ function computeSignature(secret, timestamp, method, path, body = '') {
  * Requires either a valid HMAC signature + timestamp or matching internal key
  */
 function verifyCeovaInternalProtocol(req, res, next) {
-  const secret = process.env.CEOVA_INTERNAL_SECRET || CEOVA_INTERNAL_SECRET;
+  const secret = getInternalSecret();
+  if (!secret) {
+    return res.status(503).json({
+      error: 'ServiceUnavailable',
+      message: 'Internal service protocol secret is unconfigured or invalid (CEOVA_INTERNAL_SECRET required)'
+    });
+  }
+
   const signature = req.headers['x-ceova-internal-signature'];
   const timestamp = req.headers['x-ceova-timestamp'];
   const internalKey = req.headers['x-ceova-internal-key'] || req.headers['x-internal-key'];
@@ -38,7 +63,7 @@ function verifyCeovaInternalProtocol(req, res, next) {
   }
 
   // Option 1: Direct Internal Secret matching
-  if ((internalKey && internalKey === secret) || (bearerToken && bearerToken === secret)) {
+  if (safeStringCompare(internalKey, secret) || safeStringCompare(bearerToken, secret)) {
     req.isCeovaInternal = true;
     req.internalCaller = 'CEOVA_MAIN';
     return next();
@@ -59,8 +84,8 @@ function verifyCeovaInternalProtocol(req, res, next) {
 
     const expectedSig = computeSignature(secret, timestamp, req.method, req.originalUrl || req.url, req.body);
     
-    // Constant-time comparison to prevent timing attacks
-    if (crypto.timingSafeEqual(Buffer.from(signature, 'utf8'), Buffer.from(expectedSig, 'utf8'))) {
+    // Constant-time comparison
+    if (safeStringCompare(signature, expectedSig)) {
       req.isCeovaInternal = true;
       req.internalCaller = 'CEOVA_MAIN';
       return next();
@@ -96,7 +121,7 @@ function requireEntitlement(featureName) {
 }
 
 module.exports = {
-  CEOVA_INTERNAL_SECRET,
+  getInternalSecret,
   computeSignature,
   verifyCeovaInternalProtocol,
   requireEntitlement

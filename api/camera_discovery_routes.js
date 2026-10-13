@@ -9,6 +9,8 @@
  */
 
 const express = require('express');
+const net = require('net');
+const http = require('http');
 const { cameraDiscoveryBot } = require('../bots');
 const { getDatabase } = require('../db/database');
 const { rtspStreamManager } = require('../services/rtsp_stream_manager');
@@ -23,17 +25,22 @@ function createCameraDiscoveryRouter(options = {}) {
    */
   router.post('/api/cameras/discover', async (req, res) => {
     try {
-      const { username = 'admin', password = '', targetIp = null, subnetHint = null } = req.body;
+      const username = (req.body.username || '').trim();
+      const password = req.body.password || '';
+      const targetIp = req.body.targetIp ? req.body.targetIp.trim() : null;
+      const subnetHint = req.body.subnetHint ? req.body.subnetHint.trim() : null;
 
-      if (!username || typeof username !== 'string') {
-        return res.status(400).json({ error: 'CCTV admin username is required' });
+      if (!username) {
+        return res.status(400).json({ error: 'CCTV / NVR username is required' });
       }
 
+      const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
       const result = await cameraDiscoveryBot.startScan({
-        username: username.trim(),
-        password: password || '',
-        targetIp: targetIp ? targetIp.trim() : null,
-        subnetHint: subnetHint ? subnetHint.trim() : null
+        username,
+        password,
+        targetIp,
+        subnetHint,
+        orgId
       });
 
       res.json(result);
@@ -83,6 +90,221 @@ function createCameraDiscoveryRouter(options = {}) {
   });
 
   /**
+   * POST /api/cameras/test-connect
+   * Fast probe and connection for a specific IP or camera URL
+   */
+  router.post('/api/cameras/test-connect', async (req, res) => {
+    try {
+      const { target, ip, port, password = '' } = req.body;
+      const username = (req.body.username || '').trim();
+      const raw = (target || ip || '').trim();
+      if (!raw) {
+        return res.status(400).json({ success: false, error: 'Target IP or Camera endpoint is required.' });
+      }
+      if (!username) {
+        return res.status(400).json({ success: false, error: 'CCTV / NVR username is required.' });
+      }
+
+      // Parse host, port, protocol
+      let host = raw;
+      let customPort = port ? parseInt(port, 10) : null;
+
+      if (raw.startsWith('http://') || raw.startsWith('https://') || raw.startsWith('rtsp://')) {
+        try {
+          const u = new URL(raw);
+          host = u.hostname;
+          if (u.port) customPort = parseInt(u.port, 10);
+        } catch (_e) {
+          host = raw.replace(/^[a-z]+:\/\//i, '');
+        }
+      } else if (raw.includes(':')) {
+        const parts = raw.split(':');
+        host = parts[0];
+        customPort = parseInt(parts[1], 10);
+      }
+
+      host = host.split('/')[0];
+      const { probeHttpCamera } = require('../services/http_camera_client');
+
+      const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
+
+      // Comprehensive port list: all known camera/NVR/DVR ports
+      const FULL_CAMERA_PORTS = [
+        554, 8554, 8000, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8088, 8888,
+        5000, 5556, 5800, 1935, 4747, 5856, 1025, 1026, 1027, 1028, 1029, 1030,
+        1055, 6667, 7080, 7447, 7080, 18080, 8200, 9000, 9090, 10000, 10554,
+        443, 8443, 2020, 3000, 3001, 6000, 7000
+      ];
+
+      const testTcpPort = (testHost, testPort, ms = 2000) => {
+        return new Promise((resolve) => {
+          const sock = new net.Socket();
+          sock.setTimeout(ms);
+          sock.on('connect', () => { sock.destroy(); resolve(true); });
+          sock.on('timeout', () => { sock.destroy(); resolve(false); });
+          sock.on('error', () => { sock.destroy(); resolve(false); });
+          sock.connect(testPort, testHost);
+        });
+      };
+
+      let anyPortOpen = false;
+      let authFailedDetected = false;
+      let openPortsFound = [];
+
+      if (customPort) {
+        // Scan user-specified port + ALL comprehensive list (in parallel, fast)
+        const allPortsToScan = [...new Set([customPort, ...FULL_CAMERA_PORTS])];
+        const results = await Promise.all(allPortsToScan.map(p => testTcpPort(host, p, 2000).then(ok => ({ p, ok }))));
+        openPortsFound = results.filter(r => r.ok).map(r => r.p);
+        // Make sure custom port is tried first
+        openPortsFound.sort((a, b) => (a === customPort ? -1 : b === customPort ? 1 : 0));
+      } else {
+        // No port specified: scan all camera ports in parallel
+        const results = await Promise.all(FULL_CAMERA_PORTS.map(p => testTcpPort(host, p, 2000).then(ok => ({ p, ok }))));
+        openPortsFound = results.filter(r => r.ok).map(r => r.p);
+      }
+
+      // Probe all open ports concurrently: RTSP paths in parallel + HTTP in parallel
+      // Hard timeout: each port resolved within ~4s total
+      const RTSP_PORTS = new Set([554, 8554, 8000, 37777, 34567, 9559, 9527, 5556, 18080, 8200, 9000, 10554, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 4747, 5856, 8888, 1935]);
+      const HTTP_ONLY_PORTS = new Set([80, 443, 8080, 8081, 8088, 5000, 5800, 3000, 3001, 6000, 7000]);
+
+      const RTSP_PATHS = [
+        '/Streaming/Channels/101', '/cam/realmonitor?channel=1&subtype=0',
+        '/h264Preview_01_main', '/live', '/stream1', '/ch0', '/onvif1',
+        '/h264_pcm.sdp', '/', '/ch01/0', '/unicast/c1/s0/live',
+        '/Streaming/Channels/1', '/h264/ch1/main/av_stream'
+      ];
+
+      // Helper: probe a single port for both RTSP and HTTP, return first match
+      const probePort = async (p) => {
+        const tasks = [];
+
+        // Try RTSP on likely-RTSP ports (or custom port)
+        const tryRtsp = RTSP_PORTS.has(p) || (customPort === p) || !HTTP_ONLY_PORTS.has(p);
+        if (tryRtsp) {
+          // All RTSP paths in parallel, race for first success
+          const rtspTask = Promise.any(
+            RTSP_PATHS.map(path =>
+              cameraDiscoveryBot._testRtspHandshake(host, p, path, username, password)
+                .then(r => {
+                  if (r.success) return { type: 'rtsp', path, result: r };
+                  if (r.status === 'AUTH_FAILED') { authFailedDetected = true; }
+                  return Promise.reject(new Error('not matched'));
+                })
+            )
+          ).catch(() => null);
+          tasks.push(rtspTask);
+        }
+
+        // HTTP probe always runs concurrently
+        const httpTask = probeHttpCamera(host, p, username, password, 3500)
+          .then(r => {
+            if (r.success) return { type: 'http', result: r };
+            if (r.status === 'AUTH_FAILED') authFailedDetected = true;
+            return null;
+          }).catch(() => null);
+        tasks.push(httpTask);
+
+        const results = await Promise.all(tasks);
+        for (const r of results) if (r) return { port: p, ...r };
+        return null;
+      };
+
+      // Probe all open ports concurrently
+      anyPortOpen = openPortsFound.length > 0;
+      const portResults = await Promise.all(openPortsFound.map(p => probePort(p)));
+      const firstMatch = portResults.find(r => r !== null);
+
+      if (firstMatch) {
+        const p = firstMatch.port;
+        if (firstMatch.type === 'rtsp') {
+          const path = firstMatch.path;
+          const authPart = (username || password) ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : '';
+          const internalUrl = `rtsp://${authPart}${host}:${p}${path}`;
+          const camId = `CAM_${host.replace(/\./g, '_')}_${p}`;
+
+          try {
+            const existingCameras = db.getCameras(orgId);
+            for (const existing of existingCameras) {
+              rtspStreamManager.stopStream(existing.id);
+              db.removeCamera(orgId, existing.id);
+            }
+          } catch (_e) {}
+
+          const registered = db.registerCamera(orgId, {
+            id: camId,
+            name: `CCTV Camera (${host}:${p})`,
+            stream_url: internalUrl,
+            zone_name: 'SALES_FLOOR'
+          });
+          try { rtspStreamManager.startStream(registered.id, registered.stream_url); } catch (_e) {}
+
+          const clientStreamUrl = `/api/cameras/${registered.id}/stream.mjpg`;
+          return res.json({
+            success: true, status: 'Connected', mode: 'RTSP',
+            message: `Connected successfully to RTSP camera at ${host}:${p}!`,
+            camera: { ...registered, stream_url: clientStreamUrl },
+            streamUrl: clientStreamUrl
+          });
+
+        } else if (firstMatch.type === 'http') {
+          const httpProbe = firstMatch.result;
+          const authPart = (username || password) ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : '';
+          const internalUrl = `http://${authPart}${host}:${p}${httpProbe.path || '/video'}`;
+          const camId = `CAM_${host.replace(/\./g, '_')}_${p}`;
+
+          try {
+            const existingCameras = db.getCameras(orgId);
+            for (const existing of existingCameras) { db.removeCamera(orgId, existing.id); }
+          } catch (_e) {}
+
+          const registered = db.registerCamera(orgId, {
+            id: camId,
+            name: `${httpProbe.brand || 'IP Webcam'} (${host}:${p})`,
+            stream_url: internalUrl,
+            zone_name: 'SALES_FLOOR'
+          });
+          const clientStreamUrl = `/api/cameras/${registered.id}/stream.mjpg`;
+          return res.json({
+            success: true, status: 'Connected', mode: 'HTTP_MJPEG',
+            message: `Connected successfully to ${httpProbe.brand || 'camera'} at ${host}:${p}!`,
+            camera: { ...registered, stream_url: clientStreamUrl },
+            streamUrl: clientStreamUrl
+          });
+        }
+      }
+
+      if (!anyPortOpen) {
+        return res.status(404).json({
+          success: false,
+          status: 'Unreachable',
+          error: 'Camera could not be reached.',
+          hint: `Host ${host} did not respond on any of ${FULL_CAMERA_PORTS.length} scanned ports. Verify the device is powered on and connected to the same network. Check the NVR/camera menu for the correct IP.`
+        });
+      }
+
+      if (authFailedDetected) {
+        return res.status(401).json({
+          success: false,
+          status: 'Authentication failed',
+          error: 'Camera detected, but authentication failed.',
+          hint: 'The camera responded, but the username or password was rejected. Please verify your CCTV/NVR credentials.'
+        });
+      }
+
+      return res.status(422).json({
+        success: false,
+        status: 'Unsupported',
+        error: 'Device detected but the camera protocol is not supported.',
+        hint: `Host ${host} responded on open ports, but neither RTSP nor HTTP camera video streams could be authenticated.`
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, status: 'Connection error', error: err.message });
+    }
+  });
+
+  /**
    * POST /api/cameras/connect-matched
    * Register a discovered camera directly into CCTV active surveillance database and launch RTSP stream
    */
@@ -92,7 +314,18 @@ function createCameraDiscoveryRouter(options = {}) {
       const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
 
       let finalRtspUrl = rtspUrl;
-      if (!finalRtspUrl && ip) {
+      const isHttp = req.body.streamType === 'HTTP_MJPEG' || 
+                     (rtspUrl && (rtspUrl.startsWith('http://') || rtspUrl.startsWith('https://'))) || 
+                     (camPath && (camPath.includes('video') || camPath.includes('shot.jpg'))) ||
+                     (name && name.includes('IP Webcam'));
+
+      if (isHttp && ip) {
+        const u = username ? encodeURIComponent(username) : '';
+        const p = password ? encodeURIComponent(password) : '';
+        const authPart = (u || p) ? `${u}:${p}@` : '';
+        const portPart = port ? `:${port}` : '';
+        finalRtspUrl = `http://${authPart}${ip}${portPart}/video`;
+      } else if (!finalRtspUrl && ip) {
         const u = username ? encodeURIComponent(username) : '';
         const p = password ? encodeURIComponent(password) : '';
         const authPart = (u || p) ? `${u}:${p}@` : '';
@@ -141,15 +374,18 @@ function createCameraDiscoveryRouter(options = {}) {
         } catch (streamErr) {
           console.warn(`[RtspStreamManager] Could not start stream for ${registered.id}:`, streamErr.message);
         }
-      } else {
-        console.log(`[CameraRoutes] HTTP stream registered (no FFmpeg needed): ${registered.id} -> ${finalRtspUrl}`);
       }
+
+      const clientStreamUrl = `/api/cameras/${registered.id}/stream.mjpg`;
 
       res.status(201).json({
         success: true,
         message: 'Camera connected and added to surveillance system',
-        camera: registered,
-        streamUrl: `/api/cameras/${registered.id}/stream.mjpg`
+        camera: {
+          ...registered,
+          stream_url: clientStreamUrl
+        },
+        streamUrl: clientStreamUrl
       });
     } catch (err) {
       if (err.code === 'QUOTA_EXCEEDED') {
@@ -170,7 +406,17 @@ function createCameraDiscoveryRouter(options = {}) {
     try {
       const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
       const cameras = db.getCameras(orgId);
-      res.json({ success: true, count: cameras.length, cameras });
+      const sanitized = cameras.map(cam => ({
+        id: cam.id,
+        organization_id: cam.organization_id,
+        name: cam.name,
+        stream_url: `/api/cameras/${cam.id}/stream.mjpg`,
+        zone_name: cam.zone_name,
+        status: cam.status,
+        last_active_at: cam.last_active_at,
+        created_at: cam.created_at
+      }));
+      res.json({ success: true, count: sanitized.length, cameras: sanitized });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -178,15 +424,26 @@ function createCameraDiscoveryRouter(options = {}) {
 
   /**
    * GET /api/cameras/:id/stream.mjpg
-   * High-speed multipart MJPEG stream from physical RTSP camera
+   * High-speed multipart MJPEG stream from physical camera
    */
   router.get('/api/cameras/:id/stream.mjpg', (req, res) => {
     try {
       const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
       const camera = db.getCamera(req.params.id) || db.getCameras(orgId).find(c => c.id === req.params.id);
 
-      const fallbackUrl = camera ? camera.stream_url : null;
-      rtspStreamManager.handleMjpegRequest(req, res, req.params.id, fallbackUrl);
+      if (!camera) {
+        return res.status(404).json({ error: 'CameraNotFound', message: `Camera ${req.params.id} not found.` });
+      }
+
+      const streamUrl = camera.stream_url || '';
+      const isHttp = streamUrl.startsWith('http://') || streamUrl.startsWith('https://') || streamUrl.startsWith('/api/proxy-stream');
+
+      if (isHttp) {
+        const { pipeHttpCameraStream } = require('../services/http_camera_client');
+        return pipeHttpCameraStream(streamUrl, res, req);
+      }
+
+      rtspStreamManager.handleMjpegRequest(req, res, req.params.id, streamUrl);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -197,7 +454,18 @@ function createCameraDiscoveryRouter(options = {}) {
    * Latest full-resolution JPEG snapshot from camera
    */
   router.get('/api/cameras/:id/snapshot.jpg', (req, res) => {
-    rtspStreamManager.handleSnapshotRequest(req, res, req.params.id);
+    try {
+      const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
+      const camera = db.getCamera(req.params.id) || db.getCameras(orgId).find(c => c.id === req.params.id);
+      if (camera && camera.stream_url && (camera.stream_url.startsWith('http://') || camera.stream_url.startsWith('https://'))) {
+        const shotUrl = camera.stream_url.replace(/\/video$/, '/shot.jpg');
+        const { pipeHttpCameraStream } = require('../services/http_camera_client');
+        return pipeHttpCameraStream(shotUrl, res, req);
+      }
+      rtspStreamManager.handleSnapshotRequest(req, res, req.params.id);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   /**
@@ -217,6 +485,24 @@ function createCameraDiscoveryRouter(options = {}) {
       lastFrameTime: stream.lastFrameTime,
       rtspUrl: stream.rtspUrl
     });
+  });
+
+  /**
+   * DELETE /api/cameras
+   * Remove ALL cameras from surveillance and terminate their streams (Full Reset)
+   */
+  router.delete('/api/cameras', (req, res) => {
+    try {
+      const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
+      const existingCameras = db.getCameras(orgId);
+      for (const cam of existingCameras) {
+        rtspStreamManager.stopStream(cam.id);
+        db.removeCamera(orgId, cam.id);
+      }
+      res.json({ success: true, message: 'All cameras cleared from database' });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
   });
 
   /**

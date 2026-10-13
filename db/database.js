@@ -10,6 +10,8 @@
 const path = require('path');
 const fs = require('fs');
 
+const os = require('os');
+
 let DatabaseSync;
 try {
   ({ DatabaseSync } = require('node:sqlite'));
@@ -17,10 +19,35 @@ try {
   console.warn('node:sqlite not available, falling back to simulated memory SQLite');
 }
 
+function getDefaultCctvDataDir() {
+  if (process.env.CEOVA_CCTV_DATA_DIR) {
+    return process.env.CEOVA_CCTV_DATA_DIR;
+  }
+  const home = os.homedir();
+  if (process.platform === 'darwin') {
+    return path.join(home, 'Library', 'Application Support', 'Ceova', 'CCTV');
+  } else if (process.platform === 'win32') {
+    const appData = process.env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    return path.join(appData, 'Ceova', 'CCTV');
+  } else {
+    return path.join(home, '.config', 'ceova', 'cctv');
+  }
+}
+
+function resolveDataDir() {
+  if (process.env.CEOVA_CCTV_DATA_DIR) {
+    return process.env.CEOVA_CCTV_DATA_DIR;
+  }
+  if (process.env.CEOVA_CCTV_INSTALLED === 'true' || process.env.NODE_ENV === 'production') {
+    return getDefaultCctvDataDir();
+  }
+  return path.join(__dirname, '..', 'data');
+}
+
 class CeovaDatabase {
   constructor(dbPath = null) {
     if (!dbPath) {
-      const dataDir = path.join(__dirname, '..', 'data');
+      const dataDir = resolveDataDir();
       if (!fs.existsSync(dataDir)) {
         fs.mkdirSync(dataDir, { recursive: true });
       }
@@ -190,6 +217,18 @@ class CeovaDatabase {
         last_updated_at TEXT NOT NULL,
         UNIQUE(day_of_week, hour_of_day)
       );
+
+      -- 11b. Persistent Occupancy Samples for Exact Time-Range Reports
+      CREATE TABLE IF NOT EXISTS occupancy_history_samples (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp INTEGER NOT NULL,
+        total_count INTEGER NOT NULL,
+        staff_count INTEGER NOT NULL DEFAULT 0,
+        visitor_count INTEGER NOT NULL DEFAULT 0,
+        unknown_count INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_occ_history_ts ON occupancy_history_samples(timestamp);
 
       -- 12. Ceova Ecosystem Paired Accounts & Entitlements
       CREATE TABLE IF NOT EXISTS cctv_accounts (
@@ -467,6 +506,34 @@ class CeovaDatabase {
   clearHourlyOccupancy() {
     this.run('DELETE FROM hourly_people_occupancy');
     this.seedHourlyOccupancyIfEmpty();
+  }
+
+  recordOccupancyHistorySample(sample) {
+    try {
+      const ts = sample.timestamp || Date.now();
+      const total = typeof sample.total_count === 'number' ? sample.total_count : (sample.totalCount || 0);
+      const staff = typeof sample.staff_count === 'number' ? sample.staff_count : (sample.staffCount || 0);
+      const visitor = typeof sample.visitor_count === 'number' ? sample.visitor_count : (sample.visitorCount || 0);
+      const unknown = typeof sample.unknown_count === 'number' ? sample.unknown_count : (sample.unknownCount || 0);
+      const now = new Date(ts).toISOString();
+
+      this.run(`
+        INSERT INTO occupancy_history_samples (timestamp, total_count, staff_count, visitor_count, unknown_count, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
+      `, [ts, total, staff, visitor, unknown, now]);
+    } catch (_) {}
+  }
+
+  getOccupancyHistorySamples(startTimeMs, endTimeMs) {
+    try {
+      return this.all(`
+        SELECT * FROM occupancy_history_samples
+        WHERE timestamp >= ? AND timestamp <= ?
+        ORDER BY timestamp ASC
+      `, [startTimeMs, endTimeMs]);
+    } catch (_) {
+      return [];
+    }
   }
 
   seedHourlyOccupancyIfEmpty() {
@@ -776,5 +843,7 @@ function getDatabase(customPath = null) {
 
 module.exports = {
   CeovaDatabase,
-  getDatabase
+  getDatabase,
+  getDefaultCctvDataDir,
+  resolveDataDir
 };

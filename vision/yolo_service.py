@@ -260,12 +260,13 @@ def detect_humans(req: DetectRequest):
         h, w = img.shape[:2]
 
         # STRICT: Only detect humans (COCO class 0 = person). Reject all other objects.
+        req_conf = float(req.conf) if req.conf is not None else 0.25
         results = yolo_model(
             img,
             classes=[0],
-            conf=min(req.conf if req.conf is not None else 0.32, 0.32),
+            conf=min(req_conf, 0.25),
             iou=req.iou,
-            imgsz=480,
+            imgsz=640,
             verbose=False,
             device=DEVICE,
         )
@@ -289,11 +290,11 @@ def detect_humans(req: DetectRequest):
 
                 # Geometry check: only accept realistic human aspect ratios
                 # Ignore slivers, aberrant horizontal bars (furniture, desks), or tiny noise
-                if bh < 24 or bw < 14:
+                if bh < 20 or bw < 12:
                     continue
-                if bh < (h * 0.05):
+                if bh < (h * 0.03):
                     continue
-                if bw > (bh * 1.8):  # Human body is vertical; reject wide objects (tables, sofas)
+                if bw > (bh * 2.2):  # Allow seated people with shoulders visible
                     continue
                 if bh > (bw * 8.5):  # Reject pole-like slivers
                     continue

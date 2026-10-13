@@ -1,0 +1,41 @@
+# Git Ignore for CEOVA CCTV
+
+# Security: Release private keys and secrets
+*.pem
+*.key
+keys/*private*
+keys/*.pem
+!keys/release_public_key.pem
+.env
+.env.*
+
+# Operational Data & Local Runtime
+data/
+ssl/
+*.log
+*.pid
+run/
+logs/
+runtime/bin/
+runtime/*.tar.gz
+runtime/*.zip
+
+# SQLite databases & temp files
+*.db
+*.db-wal
+*.db-shm
+
+# Build artifacts and release archives
+releases/dist/
+releases/*.tar.gz
+releases/*.zip
+
+# Dependencies & Caches
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Test scratch files
+tests/test_human.jpg
+tests/person_sample.jpg
