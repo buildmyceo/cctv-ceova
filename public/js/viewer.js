@@ -1739,7 +1739,7 @@
           const yoloRes = await fetch('/api/vision/yolo/detect', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ image: frameJpeg, conf: scanScoreFloor, iou: 0.45, classes: [0] })
+            body: JSON.stringify({ image: frameJpeg, conf: scanScoreFloor, iou: 0.45, classes: [0], cameraId: activeRoomId })
           });
           if (yoloRes.ok) {
             const data = await yoloRes.json();
@@ -1954,61 +1954,31 @@
     };
   }
 
-  // Draw futuristic neon bounding box with Role State, Global ID, Dwell Timer, and Motion State
+  // Draw pure white detection bounding box with Role State, Global ID, Dwell Timer, and Motion State (Black & White Theme)
   function drawHumanTargetBox(ctx, x, y, width, height, human) {
     const role = human.roleType || 'UNKNOWN';
     const entityType = (human.entityClass || human.class || 'person').toUpperCase();
-    let themeColor = '#00ff88'; // Default neon green
-    let tintColor = 'rgba(0, 255, 136, 0.08)';
-
-    if (human.reentered) {
-      themeColor = '#00ff88'; // Bright Neon Green for 20s Memory Re-entry
-      tintColor = 'rgba(0, 255, 136, 0.15)';
-    } else if (entityType !== 'PERSON') {
-      themeColor = '#38bdf8'; // Electric Cyan for other detected entities (phone, laptop, bottle, etc.)
-      tintColor = 'rgba(56, 189, 248, 0.12)';
-    } else if (role === 'STAFF') {
-      themeColor = '#00ff88'; // Green for Verified Staff
-      tintColor = 'rgba(0, 255, 136, 0.12)';
-    } else if (role === 'CUSTOMER') {
-      themeColor = '#38bdf8'; // Sky Blue for Customers
-      tintColor = 'rgba(56, 189, 248, 0.09)';
-    } else if (role === 'VISITOR') {
-      themeColor = '#c084fc'; // Purple for Visitors
-      tintColor = 'rgba(192, 132, 252, 0.09)';
-    } else if (role === 'DELIVERY') {
-      themeColor = '#fb923c'; // Orange for Delivery
-      tintColor = 'rgba(251, 146, 60, 0.09)';
-    } else if (role === 'SECURITY') {
-      themeColor = '#f87171'; // Red for Security
-      tintColor = 'rgba(248, 113, 113, 0.12)';
-    } else {
-      themeColor = '#00ff88'; // Neon green for Person
-      tintColor = 'rgba(0, 255, 136, 0.08)';
-    }
-
-    if (human.isRecognized) {
-      themeColor = '#38bdf8'; // Electric Cyan for Recognized Returning Human
-      tintColor = 'rgba(56, 189, 248, 0.16)';
-    }
+    const themeColor = '#ffffff'; // Black & White theme: pure white box
+    const tintColor = 'rgba(255, 255, 255, 0.02)'; // Subtle transparent fill, no green tint
 
     ctx.save();
 
-    // 1. Semi-transparent body highlight fill
+    // 1. Clean semi-transparent body highlight fill (subtle white, no color)
     ctx.fillStyle = tintColor;
     ctx.fillRect(x, y, width, height);
 
-    // 2. Glowing box boundary
-    ctx.shadowColor = themeColor;
-    ctx.shadowBlur = human.isRecognized ? 16 : 10;
-    ctx.strokeStyle = themeColor;
-    ctx.lineWidth = human.isRecognized ? 2.8 : 2.4;
+    // 2. Crisp White box boundary (clean, not green windows like)
+    ctx.shadowColor = 'rgba(255, 255, 255, 0.35)';
+    ctx.shadowBlur = 4;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.8;
     ctx.strokeRect(x, y, width, height);
 
-    // 3. Cybernetic targeting corner brackets (4 corners)
-    const bracketLen = Math.max(10, Math.min(26, width * 0.20, height * 0.20));
-    ctx.lineWidth = 3.8;
-    ctx.shadowBlur = 14;
+    // 3. Crisp white targeting corner brackets (4 corners)
+    const bracketLen = Math.max(10, Math.min(22, width * 0.18, height * 0.18));
+    ctx.lineWidth = 2.5;
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = '#ffffff';
 
     // Top-Left corner
     ctx.beginPath();
@@ -2021,13 +1991,14 @@
     ctx.moveTo(x + width - bracketLen, y + height); ctx.lineTo(x + width, y + height); ctx.lineTo(x + width, y + height - bracketLen);
     ctx.stroke();
 
-    // 4. Center Targeting Reticle
+    // 4. Center Targeting Reticle (Pure White)
     const cx = x + width / 2;
     const cy = y + height / 2;
-    const reticleSize = 7;
-    ctx.lineWidth = 1.5;
+    const reticleSize = 6;
+    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.85)';
     ctx.beginPath();
-    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
     ctx.stroke();
     ctx.beginPath();
     ctx.moveTo(cx - reticleSize, cy); ctx.lineTo(cx + reticleSize, cy);
@@ -2038,7 +2009,6 @@
     const isHuman = entityType === 'PERSON';
     const confPercent = Math.round((human.matchScore || human.roleConfidence || human.score) * 100);
     
-    // Prominently display "HUMAN #1" and if re-entered within 20s: "HUMAN #1 // RE-ENTERED (V#2)"
     let idText;
     if (isHuman) {
       const visitSuffix = (human.visitCount && human.visitCount > 1) ? ` // V#${human.visitCount}` : '';
@@ -2056,29 +2026,29 @@
     const badgeHeight = 22;
     const badgeY = Math.max(0, y - badgeHeight - 3);
 
-    // Badge 1: Role, Entity Identity & Confidence Pill
+    // Badge 1: Role, Entity Identity & Confidence Pill (Pure Black fill, Crisp White Border & Text)
     ctx.shadowBlur = 0;
-    ctx.fillStyle = 'rgba(10, 14, 20, 0.94)';
+    ctx.fillStyle = '#000000';
     ctx.fillRect(x, badgeY, idWidth, badgeHeight);
-    ctx.strokeStyle = themeColor;
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = '#ffffff';
+    ctx.lineWidth = 1.2;
     ctx.strokeRect(x, badgeY, idWidth, badgeHeight);
 
-    // Status dot
-    ctx.fillStyle = themeColor;
+    // Status dot (White)
+    ctx.fillStyle = '#ffffff';
     ctx.beginPath();
-    ctx.arc(x + 8, badgeY + badgeHeight / 2, 3.5, 0, Math.PI * 2);
+    ctx.arc(x + 8, badgeY + badgeHeight / 2, 3, 0, Math.PI * 2);
     ctx.fill();
 
-    // ID Text
-    ctx.fillStyle = themeColor;
+    // ID Text (White)
+    ctx.fillStyle = '#ffffff';
     ctx.fillText(idText, x + 16, badgeY + 15);
 
-    // Badge 2: Dwell Timer on the Box
+    // Badge 2: Dwell Timer on the Box (Black fill, White Border & Text)
     const timerX = x + idWidth + 4;
-    ctx.fillStyle = 'rgba(10, 14, 20, 0.94)';
+    ctx.fillStyle = '#000000';
     ctx.fillRect(timerX, badgeY, timerWidth, badgeHeight);
-    ctx.strokeStyle = themeColor;
+    ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 1.2;
     ctx.strokeRect(timerX, badgeY, timerWidth, badgeHeight);
 
@@ -2086,7 +2056,7 @@
     ctx.fillStyle = '#ffffff';
     ctx.fillText(timerText, timerX + 7, badgeY + 15);
 
-    // 6. Bottom Coordinates & Motion State Tag
+    // 6. Bottom Coordinates & Motion State Tag (Crisp Monochrome Silver/White)
     const motionStr = human.motionState === 'WALKING'
       ? `WALKING ${human.direction}`
       : 'STEADY';
@@ -2094,7 +2064,7 @@
     const subText = `${recTag}[${isHuman ? 'HUMAN' : entityType} #${human.id}] ${motionStr} // [${Math.round(x)},${Math.round(y)}]`;
 
     ctx.font = '9px "Courier New", monospace';
-    ctx.fillStyle = themeColor;
+    ctx.fillStyle = '#d4d4d8';
     ctx.fillText(subText, x + 4, y + height - 6);
 
     ctx.restore();
@@ -2382,10 +2352,10 @@
       drawHumanTargetBox(ctx, human.x, human.y, human.width, human.height, human);
     });
 
-    // Burn CCTV watermark
-    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    // Burn CCTV watermark (Monochrome White)
+    ctx.fillStyle = 'rgba(0,0,0,0.85)';
     ctx.fillRect(16, height - 52, 580, 38);
-    ctx.fillStyle = '#00ff88';
+    ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 15px monospace';
     ctx.fillText(`CEOVA CCTV // 🤖 HUMAN BOT [${trackedHumans.length} IN VIEW, ${humanTracker.totalUniqueCount} TOTAL] // ${osdTimestamp.textContent}`, 26, height - 26);
 
@@ -3882,12 +3852,12 @@
       ctx.fillText(timeStr, px, pad.top + ph + 8);
     }
 
-    // 2. Reference Lines (Peak & Average)
+    // 2. Reference Lines (Peak & Average - Monochrome)
     if (peakVal > 0) {
       const py = getY(peakVal);
       ctx.save();
       ctx.beginPath();
-      ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
       ctx.setLineDash([4, 4]);
       ctx.lineWidth = 1;
       ctx.moveTo(pad.left, py);
@@ -3896,14 +3866,14 @@
 
       // Peak Badge on right margin
       ctx.setLineDash([]);
-      ctx.fillStyle = 'rgba(245, 158, 11, 0.18)';
-      ctx.strokeStyle = 'rgba(245, 158, 11, 0.5)';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.12)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)';
       ctx.beginPath();
       ctx.roundRect(pad.left + pw + 4, py - 9, 56, 18, 4);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = '#f59e0b';
+      ctx.fillStyle = '#ffffff';
       ctx.font = '9px JetBrains Mono, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -3915,7 +3885,7 @@
       const ay = getY(avgVal);
       ctx.save();
       ctx.beginPath();
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.28)';
       ctx.setLineDash([3, 3]);
       ctx.lineWidth = 1;
       ctx.moveTo(pad.left, ay);
@@ -3924,14 +3894,14 @@
 
       // Avg Badge on right margin
       ctx.setLineDash([]);
-      ctx.fillStyle = 'rgba(56, 189, 248, 0.15)';
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.08)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
       ctx.beginPath();
       ctx.roundRect(pad.left + pw + 4, ay - 9, 56, 18, 4);
       ctx.fill();
       ctx.stroke();
 
-      ctx.fillStyle = '#38bdf8';
+      ctx.fillStyle = '#d4d4d8';
       ctx.font = '9px JetBrains Mono, monospace';
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
@@ -3959,14 +3929,14 @@
     ctx.rect(pad.left - 2, pad.top - 5, pw + 4, ph + 10);
     ctx.clip();
 
-    // Series 1: Total People (with gradient fill)
+    // Series 1: Total People (Monochrome White with gradient fill)
     if (chkSeriesTotal && chkSeriesTotal.checked && totalCoords.length > 0) {
       const totalGrad = ctx.createLinearGradient(0, pad.top, 0, pad.top + ph);
-      totalGrad.addColorStop(0, 'rgba(56, 189, 248, 0.28)');
-      totalGrad.addColorStop(0.7, 'rgba(56, 189, 248, 0.05)');
-      totalGrad.addColorStop(1, 'rgba(56, 189, 248, 0.0)');
+      totalGrad.addColorStop(0, 'rgba(255, 255, 255, 0.25)');
+      totalGrad.addColorStop(0.7, 'rgba(255, 255, 255, 0.04)');
+      totalGrad.addColorStop(1, 'rgba(255, 255, 255, 0.0)');
 
-      drawSmoothSeries(ctx, totalCoords, '#38bdf8', totalGrad, 2.5);
+      drawSmoothSeries(ctx, totalCoords, '#ffffff', totalGrad, 2.5);
 
       // Pulse Radar indicator at rightmost point
       const lastCoord = totalCoords[totalCoords.length - 1];
@@ -3975,27 +3945,27 @@
         ctx.save();
         ctx.beginPath();
         ctx.arc(lastCoord.x, lastCoord.y, 4 + pulse * 6, 0, Math.PI * 2);
-        ctx.fillStyle = `rgba(56, 189, 248, ${0.45 - pulse * 0.35})`;
+        ctx.fillStyle = `rgba(255, 255, 255, ${0.35 - pulse * 0.25})`;
         ctx.fill();
 
         ctx.beginPath();
         ctx.arc(lastCoord.x, lastCoord.y, 3.5, 0, Math.PI * 2);
         ctx.fillStyle = '#ffffff';
-        ctx.shadowColor = '#38bdf8';
+        ctx.shadowColor = '#ffffff';
         ctx.shadowBlur = 8;
         ctx.fill();
         ctx.restore();
       }
     }
 
-    // Series 2: Enrolled Staff (Green)
+    // Series 2: Enrolled Staff (Silver Monochrome)
     if (chkSeriesStaff && chkSeriesStaff.checked && staffCoords.length > 0) {
-      drawSmoothSeries(ctx, staffCoords, '#22c55e', null, 1.8);
+      drawSmoothSeries(ctx, staffCoords, '#d4d4d8', null, 1.8);
     }
 
-    // Series 3: Unknown / Visitors (Purple)
+    // Series 3: Unknown / Visitors (Muted Gray Monochrome)
     if (chkSeriesVisitors && chkSeriesVisitors.checked && visitorCoords.length > 0) {
-      drawSmoothSeries(ctx, visitorCoords, '#a855f7', null, 1.8);
+      drawSmoothSeries(ctx, visitorCoords, '#71717a', null, 1.8);
     }
 
     // 4. Interactive Hover Crosshair & Dots
@@ -4005,7 +3975,7 @@
       // Vertical scanner crosshair line
       ctx.save();
       ctx.beginPath();
-      ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.6)';
       ctx.lineWidth = 1;
       ctx.setLineDash([2, 3]);
       ctx.moveTo(hx, pad.top);
@@ -4029,8 +3999,8 @@
         if (chkSeriesTotal && chkSeriesTotal.checked) {
           ctx.beginPath();
           ctx.arc(closestPt.x, closestPt.y, 5, 0, Math.PI * 2);
-          ctx.fillStyle = '#38bdf8';
-          ctx.strokeStyle = '#fff';
+          ctx.fillStyle = '#ffffff';
+          ctx.strokeStyle = '#000000';
           ctx.lineWidth = 2;
           ctx.setLineDash([]);
           ctx.fill();
@@ -4049,15 +4019,15 @@
           graphTooltip.innerHTML = `
             <div class="graph-tooltip-time">🕒 ${timeStr}</div>
             <div class="graph-tooltip-row">
-              <span style="color:var(--accent-sky);">👥 Total People:</span>
+              <span style="color:#ffffff;">👥 Total People:</span>
               <strong>${raw.totalCount}</strong>
             </div>
             <div class="graph-tooltip-row">
-              <span style="color:var(--accent-grass);">👔 Staff:</span>
+              <span style="color:#d4d4d8;">👔 Staff:</span>
               <strong>${raw.staffCount}</strong>
             </div>
             <div class="graph-tooltip-row">
-              <span style="color:#a855f7;">🚶 Visitors:</span>
+              <span style="color:#a1a1aa;">🚶 Visitors:</span>
               <strong>${raw.visitorCount}</strong>
             </div>
             <div class="graph-tooltip-row" style="margin-top:4px; font-size:0.68rem; color:var(--text-muted); border-top:1px dashed rgba(255,255,255,0.1); padding-top:2px;">
@@ -4113,10 +4083,10 @@
     }
 
     const grad = sCtx.createLinearGradient(0, 0, 0, sH);
-    grad.addColorStop(0, 'rgba(34, 197, 94, 0.4)');
-    grad.addColorStop(1, 'rgba(34, 197, 94, 0.0)');
+    grad.addColorStop(0, 'rgba(255, 255, 255, 0.25)');
+    grad.addColorStop(1, 'rgba(255, 255, 255, 0.0)');
 
-    drawSmoothSeries(sCtx, coords, '#22c55e', grad, 1.8);
+    drawSmoothSeries(sCtx, coords, '#ffffff', grad, 1.8);
   }
 
   // Animation Loop (60 FPS smooth rendering)
@@ -4564,18 +4534,18 @@
         ctx.closePath();
 
         if (isCurrentHour) {
-          // Vibrant Glowing Green for Live Current Hour
-          ctx.fillStyle = isHovered ? '#4ade80' : '#22c55e';
-          ctx.shadowColor = 'rgba(34, 197, 94, 0.7)';
+          // Vibrant Glowing White for Live Current Hour
+          ctx.fillStyle = '#ffffff';
+          ctx.shadowColor = 'rgba(255, 255, 255, 0.8)';
           ctx.shadowBlur = 10;
         } else if (isHovered) {
-          // Highlighted Teal
-          ctx.fillStyle = '#38bdf8';
-          ctx.shadowColor = 'rgba(56, 189, 248, 0.6)';
+          // Highlighted White / Silver
+          ctx.fillStyle = '#e4e4e7';
+          ctx.shadowColor = 'rgba(255, 255, 255, 0.5)';
           ctx.shadowBlur = 8;
         } else {
-          // Signature Google Maps teal color (#2a9d8f)
-          ctx.fillStyle = '#2a9d8f';
+          // Sleek monochrome gray bar
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.35)';
         }
 
         ctx.fill();
@@ -4585,8 +4555,8 @@
           const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
           ctx.beginPath();
           ctx.arc(barX + barW / 2, barY - 7, 3 + pulse * 2, 0, Math.PI * 2);
-          ctx.fillStyle = '#4ade80';
-          ctx.shadowColor = '#22c55e';
+          ctx.fillStyle = '#ffffff';
+          ctx.shadowColor = '#ffffff';
           ctx.shadowBlur = 6;
           ctx.fill();
         }
@@ -4596,8 +4566,8 @@
           const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
           ctx.beginPath();
           ctx.arc(barX + barW / 2, pad.top + chartH - 3, 3 + pulse, 0, Math.PI * 2);
-          ctx.fillStyle = '#22c55e';
-          ctx.shadowColor = 'rgba(34, 197, 94, 0.8)';
+          ctx.fillStyle = '#ffffff';
+          ctx.shadowColor = 'rgba(255, 255, 255, 0.8)';
           ctx.shadowBlur = 8;
           ctx.fill();
         } else {

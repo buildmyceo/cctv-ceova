@@ -17,6 +17,8 @@
   "author": "Ceova",
   "license": "MIT",
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
+    "dotenv": "^18.0.8",
     "express": "^4.21.2",
     "jpeg-js": "^0.4.4",
     "pngjs": "^7.0.0",

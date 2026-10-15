@@ -9,6 +9,56 @@
 const http = require('http');
 const { spawn } = require('child_process');
 const path = require('path');
+const supabase = require('../../supabaseClient');
+
+/**
+ * Asynchronously log detection events to Supabase 'cctv_detections' table.
+ * Non-blocking: Designed to never interrupt or stall real-time video streams.
+ *
+ * @param {Object|Array<Object>} detections - Single detection or array of detections
+ * @returns {Promise<Array<Object>|null>}
+ */
+async function logDetectionToSupabase(detections) {
+  try {
+    if (!supabase || typeof supabase.from !== 'function') {
+      console.warn('[SUPABASE_DETECTION] ⚠️ Supabase client is not available or initialized.');
+      return null;
+    }
+
+    const items = Array.isArray(detections) ? detections : [detections];
+    if (items.length === 0) return null;
+
+    const records = items.map(d => ({
+      camera_id: String(d.camera_id || 'CAM-1'),
+      detected_object: String(d.detected_object || d.class || 'person'),
+      confidence: typeof d.confidence === 'number'
+        ? Number(d.confidence)
+        : (typeof d.score === 'number' ? Number(d.score) : parseFloat(d.confidence || d.score) || 0)
+    }));
+
+    const { data, error } = await supabase
+      .from('cctv_detections')
+      .insert(records)
+      .select();
+
+    if (error) {
+      console.error(`[SUPABASE_DETECTION] ❌ Error inserting detection: ${error.message} (${error.code || 'NO_CODE'})`);
+      return null;
+    }
+
+    if (Array.isArray(data) && data.length > 0) {
+      for (const row of data) {
+        console.log(`[SUPABASE_DETECTION] ✅ Recorded detection: [${row.camera_id}] ${row.detected_object} (conf: ${Number(row.confidence).toFixed(2)}) id: ${row.id}`);
+      }
+    }
+
+    return data;
+  } catch (err) {
+    console.error(`[SUPABASE_DETECTION] ❌ Error catching insert operation:`, err.message || err);
+    return null;
+  }
+}
+
 
 class YoloBridge {
   constructor(options = {}) {
@@ -190,15 +240,40 @@ class YoloBridge {
   }
 
   /**
-   * Detect humans in an image frame (Base64)
+   * Log detection event(s) to Supabase asynchronously
+   * @param {Object|Array<Object>} detectionData - { camera_id, detected_object, confidence } or array of objects
+   */
+  async logDetection(detectionData) {
+    return logDetectionToSupabase(detectionData);
+  }
+
+  /**
+   * Detect humans in an image frame (Base64) and log detections to Supabase
    * @param {string} base64Image - Frame dataURL or raw Base64
-   * @param {Object} [options] - { conf: 0.35, iou: 0.45 }
+   * @param {Object} [options] - { conf: 0.35, iou: 0.45, cameraId: 'CAM-1' }
    */
   async detectHumans(base64Image, options = {}) {
     const conf = options.conf || 0.40;
     const iou = options.iou || 0.45;
+    const cameraId = options.cameraId || options.camera_id || 'CAM-1';
     const payload = { image: base64Image, conf, iou, classes: [0] };
-    return this._postJson('/detect', payload, 2500);
+    const result = await this._postJson('/detect', payload, 2500);
+
+    // Asynchronously log detections to Supabase 'cctv_detections' without blocking video stream/processing loop
+    if (result && result.success && Array.isArray(result.detections) && result.detections.length > 0) {
+      const recordsToInsert = result.detections.map(det => ({
+        camera_id: cameraId,
+        detected_object: det.class || 'person',
+        confidence: typeof det.score === 'number' ? det.score : (det.confidence || 0)
+      }));
+
+      // Fire asynchronously — non-blocking so video stream & processing loop are never stalled
+      logDetectionToSupabase(recordsToInsert).catch(err => {
+        console.error('[SUPABASE_DETECTION] ❌ Background insert notice:', err.message || err);
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -241,5 +316,6 @@ function getYoloBridge() {
 
 module.exports = {
   YoloBridge,
-  getYoloBridge
+  getYoloBridge,
+  logDetectionToSupabase
 };

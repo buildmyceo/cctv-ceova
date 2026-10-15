@@ -307,7 +307,7 @@
     card.id = cardId;
     card.className = 'camera-match-card host-detected-card';
     card.style.background = 'rgba(255, 255, 255, 0.04)';
-    card.style.borderColor = 'rgba(56, 189, 248, 0.35)';
+    card.style.borderColor = 'rgba(255, 255, 255, 0.22)';
     card.style.flexDirection = 'column';
     card.style.alignItems = 'stretch';
     card.style.gap = '12px';
@@ -320,8 +320,8 @@
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:flex-start;">
         <div class="camera-info">
-          <div class="camera-brand-tag" style="color:var(--accent-sky);">
-            <span class="dot" style="background:#0ea5e9;"></span>
+          <div class="camera-brand-tag" style="color:#ffffff;">
+            <span class="dot" style="background:#ffffff;"></span>
             ${brandDisplay} • PORT ${host.port} (${host.service || 'Camera Service'})
           </div>
           <div class="camera-title" style="font-size:0.95rem;">Detected Device: ${host.ip}</div>
@@ -416,15 +416,15 @@
     card.id = `knownCam_${cam.id}`;
     card.className = 'camera-match-card';
     card.setAttribute('data-ip', cam.ip);
-    card.style.borderColor = 'rgba(56, 189, 248, 0.5)';
+    card.style.borderColor = 'rgba(255, 255, 255, 0.35)';
 
     card.innerHTML = `
       <div class="camera-info">
         <div class="camera-brand-tag">
-          <span class="dot" style="background:#38bdf8;"></span>
+          <span class="dot" style="background:#ffffff;"></span>
           ${cam.brand} &bull; PORT ${cam.port}
         </div>
-        <div class="camera-title">${cam.description} &mdash; <span style="color:#38bdf8;">${cam.ip}:${cam.port}</span></div>
+        <div class="camera-title">${cam.description} &mdash; <span style="color:#ffffff;">${cam.ip}:${cam.port}</span></div>
         <div class="camera-rtsp-url" title="${cam.rawUrl || cam.streamUrl}">${cam.rawUrl || cam.streamUrl}</div>
       </div>
       <div>

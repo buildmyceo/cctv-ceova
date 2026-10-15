@@ -1028,24 +1028,25 @@
   }
 
   function drawMobileHumanBox(ctx, x, y, width, height, human) {
-    const green = '#00ff88';
+    const white = '#ffffff';
     const isLive = human.isLive;
 
     ctx.save();
-    // Green tint fill
-    ctx.fillStyle = 'rgba(0, 255, 136, 0.08)';
+    // Subtle transparent fill (no green tint)
+    ctx.fillStyle = 'rgba(255, 255, 255, 0.02)';
     ctx.fillRect(x, y, width, height);
 
-    // Glowing green stroke
-    ctx.shadowColor = green;
-    ctx.shadowBlur = 10;
-    ctx.strokeStyle = green;
-    ctx.lineWidth = 2.4;
+    // Crisp white stroke (no green window)
+    ctx.shadowColor = 'rgba(255, 255, 255, 0.35)';
+    ctx.shadowBlur = 4;
+    ctx.strokeStyle = white;
+    ctx.lineWidth = 1.8;
     ctx.strokeRect(x, y, width, height);
 
     // Corner brackets
-    const bLen = Math.max(10, Math.min(24, width * 0.2, height * 0.2));
-    ctx.lineWidth = 3.6;
+    const bLen = Math.max(10, Math.min(22, width * 0.18, height * 0.18));
+    ctx.lineWidth = 2.5;
+    ctx.shadowBlur = 0;
     ctx.beginPath();
     ctx.moveTo(x, y + bLen); ctx.lineTo(x, y); ctx.lineTo(x + bLen, y);
     ctx.moveTo(x + width - bLen, y); ctx.lineTo(x + width); ctx.lineTo(x + width, y + bLen);
@@ -1056,9 +1057,14 @@
     // Center reticle
     const cx = x + width / 2;
     const cy = y + height / 2;
-    ctx.lineWidth = 1.5;
+    const reticleSize = 6;
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.arc(cx, cy, 4, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - reticleSize, cy); ctx.lineTo(cx + reticleSize, cy);
+    ctx.moveTo(cx, cy - reticleSize); ctx.lineTo(cx, cy + reticleSize);
     ctx.stroke();
 
     // Badges: Unique Number + Live Dwell Timer
@@ -1073,21 +1079,21 @@
     const bY = Math.max(0, y - bHeight - 2);
 
     ctx.shadowBlur = 0;
-    // Pill 1: ID
-    ctx.fillStyle = 'rgba(0, 20, 10, 0.94)';
+    // Pill 1: ID (Pure Black Fill, Crisp White Border & Text)
+    ctx.fillStyle = '#000000';
     ctx.fillRect(x, bY, idWidth, bHeight);
-    ctx.strokeStyle = green;
-    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = white;
+    ctx.lineWidth = 1.2;
     ctx.strokeRect(x, bY, idWidth, bHeight);
 
-    ctx.fillStyle = green;
+    ctx.fillStyle = white;
     ctx.fillText(idText, x + 8, bY + 15);
 
-    // Pill 2: Live Dwell Timer
+    // Pill 2: Live Dwell Timer (Black Fill, White Border & Text)
     const timerX = x + idWidth + 4;
-    ctx.fillStyle = 'rgba(0, 32, 16, 0.94)';
+    ctx.fillStyle = '#000000';
     ctx.fillRect(timerX, bY, timerWidth, bHeight);
-    ctx.strokeStyle = green;
+    ctx.strokeStyle = white;
     ctx.lineWidth = 1.2;
     ctx.strokeRect(timerX, bY, timerWidth, bHeight);
 
@@ -1100,7 +1106,7 @@
       : 'STEADY';
     const subText = `[#${human.id}] ${motionStr}`;
     ctx.font = '9px monospace';
-    ctx.fillStyle = human.motionState === 'WALKING' ? '#00ffcc' : 'rgba(0, 255, 136, 0.85)';
+    ctx.fillStyle = '#d4d4d8';
     ctx.fillText(subText, x + 4, y + height - 6);
 
     ctx.restore();
