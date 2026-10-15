@@ -267,6 +267,33 @@ class CeovaDatabase {
       );
 
       -- 15. Registered CCTV Cameras (Subject to plan entitlement quotas)
+            -- 16. Local CCTV Credentials & IP Storage (Stored strictly on local device, never uploaded to server)
+      CREATE TABLE IF NOT EXISTS cctv_local_credentials (
+        id TEXT PRIMARY KEY DEFAULT 'primary',
+        username TEXT,
+        password TEXT,
+        ip TEXT,
+        port INTEGER,
+        camera_id TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      );
+
+      -- 17. Persistent Background Surveillance Reports
+      CREATE TABLE IF NOT EXISTS cctv_background_reports (
+        id TEXT PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        camera_ip TEXT,
+        camera_name TEXT,
+        total_detections INTEGER NOT NULL DEFAULT 0,
+        peak_occupancy INTEGER NOT NULL DEFAULT 0,
+        incident_count INTEGER NOT NULL DEFAULT 0,
+        summary TEXT NOT NULL,
+        report_data TEXT NOT NULL,
+        created_at TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_cctv_bg_reports_created ON cctv_background_reports(created_at);
+
       CREATE TABLE IF NOT EXISTS cctv_cameras (
         id TEXT PRIMARY KEY,
         organization_id TEXT NOT NULL,
@@ -791,6 +818,32 @@ class CeovaDatabase {
       now
     ]);
 
+        // Auto-extract and save local credentials & IP locally (never sent to server)
+    try {
+      let u = camera.username || '';
+      let p = camera.password || '';
+      let host = camera.ip || '';
+      let camPort = camera.port || null;
+      if (camera.stream_url) {
+        const match = camera.stream_url.match(/^(?:rtsp|http|https):\/\/(?:([^:@]+)(?::([^@]+))?@)?([^:\/]+)(?::(\d+))?/i);
+        if (match) {
+          if (!u && match[1]) u = decodeURIComponent(match[1]);
+          if (!p && match[2]) p = decodeURIComponent(match[2]);
+          if (!host && match[3]) host = match[3];
+          if (!camPort && match[4]) camPort = parseInt(match[4], 10);
+        }
+      }
+      if (u || host) {
+        this.saveLocalCredentials({
+          username: u,
+          password: p,
+          ip: host,
+          port: camPort || 554,
+          cameraId: id
+        });
+      }
+    } catch (_e) {}
+
     return this.get('SELECT * FROM cctv_cameras WHERE id = ?', [id]);
   }
 
@@ -822,6 +875,84 @@ class CeovaDatabase {
       DELETE FROM cctv_cameras
       WHERE id = ? AND organization_id = ?
     `, [cameraId, organizationId]);
+  }
+
+  saveLocalCredentials(creds = {}) {
+    try {
+      this.exec("CREATE TABLE IF NOT EXISTS cctv_local_credentials (id TEXT PRIMARY KEY DEFAULT 'primary', username TEXT, password TEXT, ip TEXT, port INTEGER, camera_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);");
+      const now = new Date().toISOString();
+      const existing = this.getLocalCredentials();
+      const username = (creds.username !== undefined ? creds.username : existing?.username) || '';
+      const password = (creds.password !== undefined ? creds.password : existing?.password) || '';
+      const ip = (creds.ip !== undefined ? creds.ip : existing?.ip) || '';
+      const port = creds.port || existing?.port || 554;
+      const cameraId = creds.cameraId || existing?.camera_id || null;
+
+      this.run(`INSERT OR REPLACE INTO cctv_local_credentials (id, username, password, ip, port, camera_id, created_at, updated_at) VALUES ('primary', ?, ?, ?, ?, ?, ?, ?)`, [username, password, ip, port, cameraId, existing?.created_at || now, now]);
+
+      return this.getLocalCredentials();
+    } catch (e) {
+      console.warn('[DB] saveLocalCredentials error:', e.message);
+      return null;
+    }
+  }
+
+  getLocalCredentials() {
+    try {
+      this.exec("CREATE TABLE IF NOT EXISTS cctv_local_credentials (id TEXT PRIMARY KEY DEFAULT 'primary', username TEXT, password TEXT, ip TEXT, port INTEGER, camera_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);");
+      return this.get("SELECT * FROM cctv_local_credentials WHERE id = 'primary'") || null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  clearLocalCredentials() {
+    try {
+      this.exec("CREATE TABLE IF NOT EXISTS cctv_local_credentials (id TEXT PRIMARY KEY DEFAULT 'primary', username TEXT, password TEXT, ip TEXT, port INTEGER, camera_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);");
+      this.run("DELETE FROM cctv_local_credentials");
+    } catch (_e) {}
+  }
+
+  saveBackgroundReport(report = {}) {
+    try {
+      this.exec("CREATE TABLE IF NOT EXISTS cctv_background_reports (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, camera_ip TEXT, camera_name TEXT, total_detections INTEGER NOT NULL DEFAULT 0, peak_occupancy INTEGER NOT NULL DEFAULT 0, incident_count INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL, report_data TEXT NOT NULL, created_at TEXT NOT NULL);");
+      const id = report.id || ('rep_' + Date.now());
+      const now = new Date().toISOString();
+      const ts = report.timestamp || now;
+      const ip = report.camera_ip || report.ip || '';
+      const name = report.camera_name || report.name || 'CCTV Camera';
+      const detections = report.total_detections || 0;
+      const peak = report.peak_occupancy || 0;
+      const incidents = report.incident_count || 0;
+      const summary = report.summary || ('Surveillance active on ' + name + ' (' + ip + '). Detections: ' + detections + ', Peak: ' + peak + '.');
+      const dataStr = typeof report.report_data === 'string' ? report.report_data : JSON.stringify(report.report_data || report);
+
+      this.run('INSERT OR REPLACE INTO cctv_background_reports (id, timestamp, camera_ip, camera_name, total_detections, peak_occupancy, incident_count, summary, report_data, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [id, ts, ip, name, detections, peak, incidents, summary, dataStr, now]
+      );
+      return { id, timestamp: ts, camera_ip: ip, camera_name: name, total_detections: detections, peak_occupancy: peak, incident_count: incidents, summary, created_at: now };
+    } catch (e) {
+      console.warn('[DB] saveBackgroundReport error:', e.message);
+      return null;
+    }
+  }
+
+  getLatestBackgroundReport() {
+    try {
+      this.exec("CREATE TABLE IF NOT EXISTS cctv_background_reports (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, camera_ip TEXT, camera_name TEXT, total_detections INTEGER NOT NULL DEFAULT 0, peak_occupancy INTEGER NOT NULL DEFAULT 0, incident_count INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL, report_data TEXT NOT NULL, created_at TEXT NOT NULL);");
+      return this.get("SELECT * FROM cctv_background_reports ORDER BY created_at DESC LIMIT 1") || null;
+    } catch (_e) {
+      return null;
+    }
+  }
+
+  getBackgroundReports(limit = 10) {
+    try {
+      this.exec("CREATE TABLE IF NOT EXISTS cctv_background_reports (id TEXT PRIMARY KEY, timestamp TEXT NOT NULL, camera_ip TEXT, camera_name TEXT, total_detections INTEGER NOT NULL DEFAULT 0, peak_occupancy INTEGER NOT NULL DEFAULT 0, incident_count INTEGER NOT NULL DEFAULT 0, summary TEXT NOT NULL, report_data TEXT NOT NULL, created_at TEXT NOT NULL);");
+      return this.all("SELECT * FROM cctv_background_reports ORDER BY created_at DESC LIMIT ?", [limit]) || [];
+    } catch (_e) {
+      return [];
+    }
   }
 
   close() {

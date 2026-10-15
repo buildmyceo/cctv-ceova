@@ -367,7 +367,8 @@ function pipeHttpCameraStream(streamUrl, res, req) {
             'Pragma': 'no-cache',
             'Expires': '0',
             'Access-Control-Allow-Origin': '*',
-            'X-Accel-Buffering': 'no'
+            'X-Accel-Buffering': 'no',
+            'Connection': 'keep-alive'
           });
 
           const rem = cChunk.slice(Buffer.from(aHeaders, 'latin1').length + 4);
@@ -401,7 +402,8 @@ function pipeHttpCameraStream(streamUrl, res, req) {
         'Pragma': 'no-cache',
         'Expires': '0',
         'Access-Control-Allow-Origin': '*',
-        'X-Accel-Buffering': 'no'
+        'X-Accel-Buffering': 'no',
+        'Connection': 'keep-alive'
       });
 
       const remainingBody = chunk.slice(Buffer.from(rawHeaders, 'latin1').length + 4);

@@ -238,6 +238,11 @@ function createCameraDiscoveryRouter(options = {}) {
             stream_url: internalUrl,
             zone_name: 'SALES_FLOOR'
           });
+          try {
+            if (typeof db.saveLocalCredentials === 'function') {
+              db.saveLocalCredentials({ username: username || '', password: password || '', ip: host, port: p, cameraId: camId });
+            }
+          } catch (_e) {}
           try { rtspStreamManager.startStream(registered.id, registered.stream_url); } catch (_e) {}
 
           const clientStreamUrl = `/api/cameras/${registered.id}/stream.mjpg`;
@@ -265,6 +270,11 @@ function createCameraDiscoveryRouter(options = {}) {
             stream_url: internalUrl,
             zone_name: 'SALES_FLOOR'
           });
+          try {
+            if (typeof db.saveLocalCredentials === 'function') {
+              db.saveLocalCredentials({ username: username || '', password: password || '', ip: host, port: p, cameraId: camId });
+            }
+          } catch (_e) {}
           const clientStreamUrl = `/api/cameras/${registered.id}/stream.mjpg`;
           return res.json({
             success: true, status: 'Connected', mode: 'HTTP_MJPEG',
@@ -365,6 +375,11 @@ function createCameraDiscoveryRouter(options = {}) {
         stream_url: finalRtspUrl,
         zone_name: zoneName
       });
+      try {
+        if (typeof db.saveLocalCredentials === 'function') {
+          db.saveLocalCredentials({ username: username || '', password: password || '', ip: ip || targetHost || '', port: port || 554, cameraId: camId });
+        }
+      } catch (_e) {}
 
       // Only launch FFmpeg/RTSP ingest for actual RTSP streams (not HTTP proxy streams)
       const isRtspStream = finalRtspUrl.startsWith('rtsp://') || finalRtspUrl.startsWith('rtsps://');
@@ -499,7 +514,10 @@ function createCameraDiscoveryRouter(options = {}) {
         rtspStreamManager.stopStream(cam.id);
         db.removeCamera(orgId, cam.id);
       }
-      res.json({ success: true, message: 'All cameras cleared from database' });
+      if (typeof db.clearLocalCredentials === 'function') {
+        db.clearLocalCredentials();
+      }
+      res.json({ success: true, message: 'All cameras and saved credentials cleared from database' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
@@ -515,6 +533,167 @@ function createCameraDiscoveryRouter(options = {}) {
       rtspStreamManager.stopStream(req.params.id);
       db.removeCamera(orgId, req.params.id);
       res.json({ success: true, message: `Camera ${req.params.id} removed` });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  /**
+   * GET /api/cctv/credentials
+   * Retrieve locally saved CCTV credentials strictly from local SQLite DB
+   */
+  router.get('/api/cctv/credentials', (req, res) => {
+    try {
+      const creds = typeof db.getLocalCredentials === 'function' ? db.getLocalCredentials() : null;
+      res.json({
+        success: true,
+        credentials: {
+          username: creds?.username || '',
+          password: creds?.password || '',
+          ip: creds?.ip || '',
+          port: creds?.port || 554,
+          cameraId: creds?.camera_id || '',
+          storageLocation: 'Local SQLite (ceova_cctv.db) - Never sent to external cloud'
+        }
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * POST /api/cctv/credentials
+   * Save user CCTV credentials strictly into local SQLite DB
+   */
+  /**
+   * DELETE /api/cctv/credentials
+   * Clear locally saved CCTV credentials from SQLite DB
+   */
+  router.delete('/api/cctv/credentials', (req, res) => {
+    try {
+      if (typeof db.clearLocalCredentials === 'function') {
+        db.clearLocalCredentials();
+      }
+      res.json({ success: true, message: 'Local credentials cleared' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.post('/api/cctv/credentials', (req, res) => {
+    try {
+      const { username, password, ip, port, cameraId, action } = req.body || {};
+      if (action === 'clear' || action === 'disconnect') {
+        if (typeof db.clearLocalCredentials === 'function') {
+          db.clearLocalCredentials();
+        }
+        return res.json({ success: true, message: 'Local credentials cleared' });
+      }
+      let saved = null;
+      if (typeof db.saveLocalCredentials === 'function') {
+        saved = db.saveLocalCredentials({ username, password, ip, port, cameraId });
+      }
+      res.json({ success: true, credentials: saved, message: 'Saved locally on device' });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * GET /api/cctv/details
+   * Live CCTV details for CEOVA Desktop AI Assistant (Cameras, Credentials, Local IP)
+   */
+  router.get('/api/cctv/details', (req, res) => {
+    try {
+      const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
+      const cameras = db.getCameras(orgId);
+      const creds = typeof db.getLocalCredentials === 'function' ? db.getLocalCredentials() : null;
+      
+      const targetIp = creds?.ip || (cameras[0]?.name?.match(/(\d{1,3}(?:\.\d{1,3}){3})/)?.[1]) || (cameras[0]?.ip) || 'Local Network';
+      const targetPort = creds?.port || (cameras[0]?.name?.match(/:(\d+)\)/)?.[1]) || 554;
+      const latestReport = typeof db.getLatestBackgroundReport === 'function' ? db.getLatestBackgroundReport() : null;
+
+      res.json({
+        success: true,
+        connected: cameras.length > 0,
+        cameraCount: cameras.length,
+        cameras: cameras.map(c => ({
+          id: c.id,
+          name: c.name,
+          ip: c.ip || (c.name?.match(/(\d{1,3}(?:\.\d{1,3}){3})/)?.[1]) || targetIp,
+          port: targetPort,
+          stream_url: c.stream_url,
+          zone_name: c.zone_name,
+          status: c.status
+        })),
+        credentials: {
+          username: creds?.username || 'admin',
+          hasPassword: !!(creds?.password),
+          ip: `${targetIp}:${targetPort}`,
+          storage: 'Local device only (Strictly NOT on server)'
+        },
+        occupancy: {
+          activePeople: 0,
+          peakToday: 0
+        },
+        latestReport: latestReport?.summary || null
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * GET /api/cctv/token
+   * Serves loopback token strictly to local machine clients
+   */
+    /**
+   * GET /api/cctv/reports/latest
+   * Latest background surveillance report
+   */
+  router.get('/api/cctv/reports/latest', (req, res) => {
+    try {
+      const latest = typeof db.getLatestBackgroundReport === 'function' ? db.getLatestBackgroundReport() : null;
+      res.json({
+        success: true,
+        report: latest
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  /**
+   * GET /api/cctv/reports
+   * List background surveillance reports
+   */
+  router.get('/api/cctv/reports', (req, res) => {
+    try {
+      const limit = parseInt(req.query.limit, 10) || 10;
+      const reports = typeof db.getBackgroundReports === 'function' ? db.getBackgroundReports(limit) : [];
+      res.json({
+        success: true,
+        reports
+      });
+    } catch (err) {
+      res.status(500).json({ success: false, error: err.message });
+    }
+  });
+
+  router.get('/api/cctv/token', (req, res) => {
+    const remoteIp = req.socket.remoteAddress || '';
+    const isLoopback = remoteIp === '127.0.0.1' || remoteIp === '::1' || remoteIp === '::ffff:127.0.0.1';
+    if (!isLoopback) {
+      return res.status(403).json({ error: 'Forbidden: Loopback only' });
+    }
+    try {
+      const { resolveDataDir } = require('../db/database');
+      const tokenPath = require('path').join(resolveDataDir(), 'config', 'loopback.token');
+      if (require('fs').existsSync(tokenPath)) {
+        const token = require('fs').readFileSync(tokenPath, 'utf8').trim();
+        return res.json({ success: true, token });
+      }
+      res.status(404).json({ error: 'Token not found' });
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

@@ -224,9 +224,48 @@
   const btnHeaderConnectCam = document.getElementById('btnHeaderConnectCam');
   const cctvCameraBar = document.getElementById('cctvCameraBar');
   const cctvCameraBarItems = document.getElementById('cctvCameraBarItems');
+  const overlayCctvIp = document.getElementById('overlayCctvIp');
 
   let activeCameraDiscoverySse = null;
   let currentVerifiedCameras = [];
+
+  // Pre-fill CCTV credentials strictly from local device storage / local CCTV DB
+  try {
+    let savedCreds = null;
+    const rawLocal = localStorage.getItem('ceova_cctv_local_credentials');
+    if (rawLocal) {
+      try { savedCreds = JSON.parse(rawLocal); } catch (_e) {}
+    }
+    if (savedCreds) {
+      if (overlayCctvUsername && !overlayCctvUsername.value && savedCreds.username) overlayCctvUsername.value = savedCreds.username;
+      if (overlayCctvPassword && !overlayCctvPassword.value && savedCreds.password) overlayCctvPassword.value = savedCreds.password;
+      if (overlayCctvIp && !overlayCctvIp.value && savedCreds.ip) {
+        overlayCctvIp.value = savedCreds.port && savedCreds.port !== 554 ? `${savedCreds.ip}:${savedCreds.port}` : savedCreds.ip;
+      }
+    } else {
+      fetch('/api/cctv/credentials').then(r => r.json()).then(data => {
+        if (data && data.credentials && data.credentials.username) {
+          const c = data.credentials;
+          if (overlayCctvUsername && !overlayCctvUsername.value && c.username) overlayCctvUsername.value = c.username;
+          if (overlayCctvPassword && !overlayCctvPassword.value && c.password) overlayCctvPassword.value = c.password;
+          if (overlayCctvIp && !overlayCctvIp.value && c.ip) {
+            overlayCctvIp.value = c.port && c.port !== 554 ? `${c.ip}:${c.port}` : c.ip;
+          }
+          localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(c));
+        }
+      }).catch(() => {});
+    }
+
+    // Auto-connect to existing verified camera on load so user doesn't have to reconnect every time
+    fetch('/api/cameras').then(r => r.json()).then(async data => {
+      const existing = (data && data.cameras) || [];
+      if (existing.length > 0) {
+        console.log('[Viewer] Found already connected camera in local DB. Auto-playing stream:', existing[0].name);
+        await switchCamera(existing[0]);
+        if (standbyOverlay) standbyOverlay.classList.add('hidden');
+      }
+    }).catch(() => {});
+  } catch (_e) {}
 
   // Toggle Password Visibility in Modal
   if (overlayTogglePassBtn && overlayCctvPassword) {
@@ -425,6 +464,27 @@
             if (overlayBotPulse) overlayBotPulse.style.background = '#4ade80';
             if (overlayBotStatusText) overlayBotStatusText.textContent = `✓ ${testData.message}`;
 
+            // Save credentials strictly on local device and notify CEOVA Desktop
+            try {
+              const localCredObj = {
+                username,
+                password,
+                ip: targetIp.split(':')[0],
+                port: targetIp.includes(':') ? parseInt(targetIp.split(':')[1], 10) : 554,
+                cameraId: testData.camera?.id || `CAM_${targetIp.replace(/[:.]/g, '_')}`,
+                savedAt: new Date().toISOString()
+              };
+              localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(localCredObj));
+              fetch('/api/cctv/credentials', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(localCredObj)
+              }).catch(() => {});
+              if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'CEOVA_CCTV_CONNECTED', payload: localCredObj }, '*');
+              }
+            } catch (_e) {}
+
             renderDiscoveryResults([testData.camera], []);
             await refreshCameraSwitcher();
 
@@ -517,6 +577,33 @@
               const matchedCams = ev.cameras || [];
               const discHosts = ev.discoveredHosts || [];
 
+              // Save discovered camera & credentials strictly on local device and notify CEOVA Desktop
+              if (matchedCams.length > 0) {
+                const verifiedCam = matchedCams[0];
+                const cleanIp = verifiedCam.ip || (verifiedCam.name ? verifiedCam.name.match(/\(([^\:]+)/)?.[1] : '');
+                const cleanPort = verifiedCam.port || 554;
+                try {
+                  const localCredObj = {
+                    username,
+                    password,
+                    ip: cleanIp,
+                    port: cleanPort,
+                    cameraId: verifiedCam.id,
+                    streamUrl: verifiedCam.stream_url,
+                    savedAt: new Date().toISOString()
+                  };
+                  localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(localCredObj));
+                  fetch('/api/cctv/credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(localCredObj)
+                  }).catch(() => {});
+                  if (window.parent && window.parent !== window) {
+                    window.parent.postMessage({ type: 'CEOVA_CCTV_CONNECTED', payload: localCredObj }, '*');
+                  }
+                } catch (_e) {}
+              }
+
               renderDiscoveryResults(matchedCams, discHosts);
               await refreshCameraSwitcher();
 
@@ -577,33 +664,118 @@
     });
   }
 
-  // Clear Saved Cameras Button Handler
+  // Clear Saved Cameras & Credentials Button Handler
+  async function clearSavedCctvSettings(e) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const btn = document.getElementById('btnOverlayClearAll');
+    try {
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = 'Clearing...';
+      }
+
+      // 1. Wipe backend camera records and credentials across both endpoints
+      await Promise.allSettled([
+        fetch('/api/cameras', { method: 'DELETE' }),
+        fetch('/api/cctv/credentials', { method: 'DELETE' }),
+        fetch('/api/cctv/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'clear' })
+        })
+      ]);
+
+      // 2. Wipe browser localStorage entirely
+      try {
+        localStorage.removeItem('ceova_cctv_local_credentials');
+        localStorage.removeItem('ceova_cctv_connected');
+        localStorage.removeItem('ceova_cctv_last_stream');
+        localStorage.removeItem('ceova_cctv_active_cam');
+      } catch (_lsErr) {}
+
+      // 3. Clear modal input fields immediately
+      if (overlayCctvUsername) overlayCctvUsername.value = '';
+      if (overlayCctvPassword) overlayCctvPassword.value = '';
+      if (overlayCctvIp) overlayCctvIp.value = '';
+
+      // 4. Reset discovered devices container & count
+      if (overlayResultsList) overlayResultsList.innerHTML = '';
+      if (overlayResultsBadge) {
+        overlayResultsBadge.textContent = '0 Verified';
+        overlayResultsBadge.style.background = '#27272a';
+        overlayResultsBadge.style.color = '#a1a1aa';
+      }
+      if (overlayCameraResults) overlayCameraResults.style.display = 'none';
+
+      // 5. Reset status message and pulse indicator
+      if (overlayBotStatusText) {
+        overlayBotStatusText.textContent = '✓ All saved credentials and camera settings cleared. Ready for new connection.';
+      }
+      if (overlayBotPulse) {
+        overlayBotPulse.style.background = '#4ade80';
+        overlayBotPulse.style.boxShadow = '0 0 8px rgba(74, 222, 128, 0.4)';
+      }
+
+      // 6. Stop stream players and reset indicators
+      currentVerifiedCameras = [];
+      if (cctvCameraBar) cctvCameraBar.style.display = 'none';
+      if (fallbackImgFeed) {
+        fallbackImgFeed.src = '';
+        fallbackImgFeed.style.display = 'none';
+      }
+      if (remoteVideo) {
+        remoteVideo.srcObject = null;
+        remoteVideo.style.display = 'none';
+      }
+      if (osdCameraName) osdCameraName.textContent = 'NO CAMERA CONNECTED';
+      if (systemStatusText) systemStatusText.textContent = 'STANDBY // DISCONNECTED';
+      if (osdStatus) {
+        osdStatus.textContent = 'DISCONNECTED';
+        osdStatus.style.color = 'var(--accent-red)';
+      }
+      await refreshCameraSwitcher();
+
+      // 7. Notify parent CEOVA window if running in iframe / Tauri
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: 'CEOVA_CCTV_CLEARED' }, '*');
+          window.parent.postMessage({ type: 'CEOVA_CCTV_DISCONNECTED' }, '*');
+        }
+      } catch (_msgErr) {}
+
+      // 8. Positive UI confirmation on the button
+      if (btn) {
+        btn.innerHTML = '✓ Cleared';
+        btn.style.color = '#4ade80';
+        btn.style.borderColor = '#4ade80';
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.innerHTML = '🗑️ Clear Saved';
+          btn.style.color = '#ef4444';
+          btn.style.borderColor = '#3f3f46';
+        }, 1500);
+      }
+    } catch (err) {
+      if (overlayBotStatusText) overlayBotStatusText.textContent = `Clear failed: ${err.message}`;
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '🗑️ Clear Saved';
+      }
+    }
+  }
+
+  window.clearSavedCctvSettings = clearSavedCctvSettings;
+
   const btnOverlayClearAll = document.getElementById('btnOverlayClearAll');
   if (btnOverlayClearAll) {
-    btnOverlayClearAll.addEventListener('click', async () => {
-      try {
-        btnOverlayClearAll.disabled = true;
-        btnOverlayClearAll.textContent = 'Clearing...';
-        await fetch('/api/cameras', { method: 'DELETE' });
-        currentVerifiedCameras = [];
-        if (cctvCameraBar) cctvCameraBar.style.display = 'none';
-        if (fallbackImgFeed) fallbackImgFeed.src = '';
-        if (osdCameraName) osdCameraName.textContent = 'NO CAMERA CONNECTED';
-        if (systemStatusText) systemStatusText.textContent = 'STANDBY // DISCONNECTED';
-        if (overlayBotStatusText) overlayBotStatusText.textContent = '✓ All saved camera settings cleared. Enter new IP and credentials to connect.';
-        if (overlayBotPulse) overlayBotPulse.style.background = '#4ade80';
-        if (overlayCameraResults) overlayCameraResults.style.display = 'none';
-        await refreshCameraSwitcher();
-      } catch (err) {
-        if (overlayBotStatusText) overlayBotStatusText.textContent = `Clear failed: ${err.message}`;
-      } finally {
-        btnOverlayClearAll.disabled = false;
-        btnOverlayClearAll.innerHTML = '🗑️ Clear Saved';
-      }
-    });
+    btnOverlayClearAll.addEventListener('click', clearSavedCctvSettings);
   }
 
   // 3. WebSocket & WebRTC Signaling
+  let wsReconnectTimer = null;
   function initWebSocket() {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const wsUrl = `${protocol}//${window.location.host}`;
@@ -622,6 +794,10 @@
         roomId: activeRoomId
       }));
 
+      if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
       // Ping interval for latency
       startPingInterval();
     };
@@ -636,10 +812,15 @@
     };
 
     ws.onclose = () => {
-      console.warn('Signaling server closed. Reconnecting in 2s...');
+      console.warn('Signaling server closed. Reconnecting in 3s...');
       telemetryWs.textContent = 'RECONNECTING';
       telemetryWs.style.color = 'var(--accent-amber)';
-      setTimeout(initWebSocket, 2000);
+      if (!wsReconnectTimer) {
+        wsReconnectTimer = setTimeout(() => {
+          wsReconnectTimer = null;
+          initWebSocket();
+        }, 3000);
+      }
     };
 
     ws.onerror = (err) => {
@@ -648,13 +829,15 @@
   }
 
   let pingStart = 0;
+  let pingIntervalTimer = null;
   function startPingInterval() {
-    setInterval(() => {
+    if (pingIntervalTimer) clearInterval(pingIntervalTimer);
+    pingIntervalTimer = setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
         pingStart = performance.now();
         ws.send(JSON.stringify({ type: 'ping' }));
       }
-    }, 3000);
+    }, 4000);
   }
 
   const fallbackImgFeed = document.getElementById('fallbackImgFeed');
@@ -905,7 +1088,13 @@
   }
 
   // 6. Connected / Disconnected State Handler
+  let hasLoggedCameraConnect = false;
+  let disconnectDebounceTimer = null;
   function onStreamConnected(protocolName) {
+    if (disconnectDebounceTimer) {
+      clearTimeout(disconnectDebounceTimer);
+      disconnectDebounceTimer = null;
+    }
     if (!isConnected) {
       isConnected = true;
       standbyOverlay.classList.add('hidden');
@@ -913,7 +1102,10 @@
       systemStatusText.textContent = 'ONLINE // LIVE FEED ACTIVE';
       osdStatus.textContent = 'ONLINE';
       osdStatus.style.color = 'var(--accent-green)';
-      addLogEvent('camera-connect', 'CCTV Camera Connected', 'Live video stream initialized');
+      if (!hasLoggedCameraConnect) {
+        hasLoggedCameraConnect = true;
+        addLogEvent('camera-connect', 'CCTV Camera Connected', 'Live video stream initialized');
+      }
     }
     streamProtocolText.textContent = protocolName;
     startFpsMeter();
@@ -1007,22 +1199,26 @@
     }
   }
 
-  function onStreamDisconnected() {
-    isConnected = false;
-    standbyOverlay.classList.remove('hidden');
-    systemPulse.className = 'pulse-dot';
-    systemStatusText.textContent = 'STANDBY // WAITING FOR PHONE';
-    osdStatus.textContent = 'DISCONNECTED';
-    osdStatus.style.color = 'var(--accent-red)';
-    fpsMeter.textContent = '0';
-    resMeter.textContent = '-- x --';
-    remoteVideo.srcObject = null;
-    remoteVideo.style.display = 'none';
-    if (fallbackImgFeed) fallbackImgFeed.style.display = 'none';
-    
-    if (mediaRecorder && mediaRecorder.state === 'recording') {
-      stopRecording();
-    }
+  function onStreamDisconnected(cameraName) {
+    if (disconnectDebounceTimer) clearTimeout(disconnectDebounceTimer);
+    disconnectDebounceTimer = setTimeout(() => {
+      isConnected = false;
+      hasLoggedCameraConnect = false;
+      standbyOverlay.classList.remove('hidden');
+      systemPulse.className = 'pulse-dot';
+      systemStatusText.textContent = `STANDBY // ${cameraName || 'CAMERA'}`;
+      osdStatus.textContent = 'DISCONNECTED';
+      osdStatus.style.color = 'var(--accent-red)';
+      fpsMeter.textContent = '0';
+      resMeter.textContent = '-- x --';
+      remoteVideo.srcObject = null;
+      remoteVideo.style.display = 'none';
+      if (fallbackImgFeed) fallbackImgFeed.style.display = 'none';
+      
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        stopRecording();
+      }
+    }, 2000);
   }
 
   // 7. Live FPS and Resolution Meter

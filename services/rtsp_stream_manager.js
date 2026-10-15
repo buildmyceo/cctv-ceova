@@ -98,7 +98,9 @@ class RtspStreamInstance extends EventEmitter {
       '-loglevel', 'warning',
       '-rtsp_transport', 'tcp',
       '-reorder_queue_size', '5',
-      '-buffer_size', '1024000',
+      '-buffer_size', '2048000',
+      '-stimeout', '5000000',
+      '-reorder_queue_size', '10',
       '-i', inputUrl,
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
@@ -369,7 +371,7 @@ class RtspStreamManager {
     res.writeHead(200, {
       'Content-Type': 'multipart/x-mixed-replace; boundary=frame',
       'Cache-Control': 'no-cache, no-store, must-revalidate',
-      'Connection': 'close',
+      'Connection': 'keep-alive',
       'Pragma': 'no-cache'
     });
 

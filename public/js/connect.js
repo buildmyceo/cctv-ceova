@@ -32,6 +32,34 @@
   const matchedCamerasContainer = document.getElementById('matchedCamerasContainer');
   const matchedCamerasList = document.getElementById('matchedCamerasList');
 
+  // Pre-fill credentials strictly from local device storage / local CCTV DB
+  try {
+    let savedCreds = null;
+    const rawLocal = localStorage.getItem('ceova_cctv_local_credentials');
+    if (rawLocal) {
+      try { savedCreds = JSON.parse(rawLocal); } catch (_e) {}
+    }
+    if (savedCreds) {
+      if (inputUsername && !inputUsername.value && savedCreds.username) inputUsername.value = savedCreds.username;
+      if (inputPassword && !inputPassword.value && savedCreds.password) inputPassword.value = savedCreds.password;
+      if (inputTargetIp && !inputTargetIp.value && savedCreds.ip) {
+        inputTargetIp.value = savedCreds.port && savedCreds.port !== 554 ? `${savedCreds.ip}:${savedCreds.port}` : savedCreds.ip;
+      }
+    } else {
+      fetch('/api/cctv/credentials').then(r => r.json()).then(data => {
+        if (data && data.credentials && data.credentials.username) {
+          const c = data.credentials;
+          if (inputUsername && !inputUsername.value && c.username) inputUsername.value = c.username;
+          if (inputPassword && !inputPassword.value && c.password) inputPassword.value = c.password;
+          if (inputTargetIp && !inputTargetIp.value && c.ip) {
+            inputTargetIp.value = c.port && c.port !== 554 ? `${c.ip}:${c.port}` : c.ip;
+          }
+          localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(c));
+        }
+      }).catch(() => {});
+    }
+  } catch (_e) {}
+
   // Toggle Password Visibility
   togglePassBtn?.addEventListener('click', () => {
     if (inputPassword.type === 'password') {
@@ -97,6 +125,28 @@
             rawRtspUrl: testData.streamUrl,
             rtspUrl: testData.streamUrl
           };
+
+          // Save credentials strictly on local device and notify CEOVA Desktop
+          try {
+            const localCredObj = {
+              username,
+              password,
+              ip: camObj.ip,
+              port: camObj.port,
+              cameraId: testData.camera.id,
+              savedAt: new Date().toISOString()
+            };
+            localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(localCredObj));
+            fetch('/api/cctv/credentials', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(localCredObj)
+            }).catch(() => {});
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage({ type: 'CEOVA_CCTV_CONNECTED', payload: localCredObj }, '*');
+            }
+          } catch (_e) {}
+
           addMatchedCameraCard(camObj);
           return;
         } else {
@@ -307,6 +357,26 @@
         });
 
         if (res.ok) {
+          try {
+            const localCredObj = {
+              username: inputUsername?.value?.trim() || '',
+              password: inputPassword?.value || '',
+              ip: camera.ip || '',
+              port: camera.port || 554,
+              cameraId: camera.id,
+              savedAt: new Date().toISOString()
+            };
+            localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(localCredObj));
+            fetch('/api/cctv/credentials', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(localCredObj)
+            }).catch(() => {});
+            if (window.parent && window.parent !== window) {
+              window.parent.postMessage({ type: 'CEOVA_CCTV_CONNECTED', payload: localCredObj }, '*');
+            }
+          } catch (_e) {}
+
           alert(`✅ Camera successfully connected!\nNavigating to CCTV Surveillance Hub...`);
           window.location.href = '/index.html';
         } else {

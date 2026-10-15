@@ -211,6 +211,15 @@ const { rtspStreamManager } = require('./services/rtsp_stream_manager');
 const cameraDiscoveryRouter = createCameraDiscoveryRouter();
 app.use(cameraDiscoveryRouter);
 
+app.get('/api/cctv/token', (req, res) => {
+  try {
+    const agent = require('./services/loopback_agent').getLoopbackAgent();
+    res.json({ success: true, token: agent.token });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 const { pipeHttpCameraStream } = require('./services/http_camera_client');
 
 // HTTP Video Stream Proxy — forwards IP Webcam (Android) streams to the browser
@@ -465,6 +474,19 @@ wss.on('connection', (ws, req) => {
 });
 
 // Start Servers
+httpsServer.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.warn(`[SERVER] HTTPS Port ${PORT} already in use. Exiting cleanly.`);
+    process.exit(0);
+  }
+});
+httpServer.on("error", (err) => {
+  if (err.code === "EADDRINUSE") {
+    console.warn(`[SERVER] HTTP Port ${HTTP_PORT} already in use. Exiting cleanly.`);
+    process.exit(0);
+  }
+});
+
 httpsServer.listen(PORT, '0.0.0.0', () => {
   const localUrl = `https://localhost:${PORT}`;
   const lanUrl = `https://${primaryIp}:${PORT}`;
@@ -492,3 +514,61 @@ const loopbackAgent = getLoopbackAgent();
 loopbackAgent.start().catch(err => {
   console.warn('[AGENT_8085] Notice:', err.message);
 });
+
+// Background Surveillance Report Generator
+function runBackgroundReportTask() {
+  try {
+    const { getDatabase } = require('./db/database');
+    const db = getDatabase();
+    const creds = typeof db.getLocalCredentials === 'function' ? db.getLocalCredentials() : null;
+    const cameras = typeof db.getCameras === 'function' ? db.getCameras('ORG-DEFAULT') : [];
+    const primaryCam = cameras[0];
+    const ip = creds?.ip || (primaryCam?.name?.match(/\(([^\:]+)/)?.[1]) || (primaryCam?.ip) || 'Local Network';
+    const name = primaryCam?.name || 'Main Camera';
+
+    let totalDetections = 0;
+    let peakOccupancy = 0;
+    try {
+      const recentSamples = db.all("SELECT * FROM occupancy_history_samples WHERE timestamp > ? ORDER BY timestamp DESC", [Date.now() - 3600000]) || [];
+      if (recentSamples.length > 0) {
+        totalDetections = recentSamples.reduce((sum, s) => sum + (s.total_count || 0), 0);
+        peakOccupancy = Math.max(...recentSamples.map(s => s.total_count || 0));
+      }
+    } catch (_e) {}
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const isConn = cameras.length > 0;
+    const summary = isConn
+      ? `Surveillance report (${timeStr}): Camera "${name}" (IP: ${ip}) is ONLINE & CONNECTED. Total recent detections: ${totalDetections}, Peak occupancy: ${peakOccupancy} person(s). Credentials and stream data are secured locally on this device.`
+      : `Surveillance report (${timeStr}): Background CCTV daemon is active in standby mode. No camera is currently streaming. Target IP: ${ip}.`;
+
+    if (typeof db.saveBackgroundReport === 'function') {
+      db.saveBackgroundReport({
+        id: `rep_${Date.now()}`,
+        timestamp: now.toISOString(),
+        camera_ip: ip,
+        camera_name: name,
+        total_detections: totalDetections,
+        peak_occupancy: peakOccupancy,
+        incident_count: 0,
+        summary,
+        report_data: {
+          cameraCount: cameras.length,
+          cameras: cameras.map(c => ({ id: c.id, name: c.name, stream_url: c.stream_url })),
+          savedIp: ip,
+          savedUsername: creds?.username || 'admin',
+          generatedAt: now.toISOString()
+        }
+      });
+      console.log(`[CCTV-REPORT] ${summary}`);
+    }
+  } catch (err) {
+    console.warn('[CCTV-REPORT] Background report notice:', err.message);
+  }
+}
+
+// Initial report 2 seconds after startup, then recurring every 10 minutes
+setTimeout(runBackgroundReportTask, 2000);
+setInterval(runBackgroundReportTask, 10 * 60 * 1000);
+

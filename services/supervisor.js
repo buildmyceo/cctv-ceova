@@ -124,7 +124,23 @@ class ProcessSupervisor {
   /**
    * Start Node.js CCTV Agent child process
    */
+  killStalePortProcesses() {
+    try {
+      const out = execSync("lsof -ti :3443,:3080,:8085 2>/dev/null", { encoding: "utf8" }).trim();
+      if (out) {
+        const pids = out.split("\n").map(p => parseInt(p.trim(), 10)).filter(p => !isNaN(p) && p !== process.pid);
+        for (const pid of pids) {
+          try { process.kill(pid, "SIGKILL"); } catch (_) {}
+        }
+        try { execSync("sleep 0.25"); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   startAgent() {
+    if (this.isShuttingDown) return;
+    if (this.agentProcess) return;
+    this.killStalePortProcesses();
     if (this.isShuttingDown) return;
 
     const serverScript = path.join(__dirname, '..', 'server.js');
@@ -154,7 +170,8 @@ class ProcessSupervisor {
 
     this.agentProcess.on('exit', (code, signal) => {
       this.log(`CCTV Agent process (PID ${pid}) exited with code ${code} (${signal})`);
-      this.removePid(AGENT_PID_FILE);
+      this.killStalePortProcesses();
+    this.removePid(AGENT_PID_FILE);
       this.agentProcess = null;
 
       if (!this.isShuttingDown) {
@@ -170,8 +187,21 @@ class ProcessSupervisor {
   /**
    * Start Python YOLOv8 microservice child process
    */
-  startYolo() {
+  async startYolo() {
     if (this.isShuttingDown) return;
+    if (this.yoloProcess) return;
+
+    // Avoid spawning duplicate if YOLO is already healthy on port 5055
+    const isHealthy = await new Promise((resolve) => {
+      const req = http.get("http://127.0.0.1:5055/health", { timeout: 1000 }, (res) => {
+        resolve(res.statusCode === 200);
+      });
+      req.on("error", () => resolve(false));
+    });
+    if (isHealthy) {
+      this.log("Python YOLO service is already active and healthy on port 5055.");
+      return;
+    }
 
     const yoloScript = path.join(__dirname, '..', 'vision', 'yolo_service.py');
     const pythonCmd = resolvePythonBinary(path.join(__dirname, '..'), DATA_DIR);
@@ -236,7 +266,7 @@ class ProcessSupervisor {
       return;
     }
 
-    const delayMs = Math.min(1000 * Math.pow(2, this.restartCounts[name] - 1), 8000);
+    const delayMs = Math.max(2000, Math.min(1000 * Math.pow(2, this.restartCounts[name] - 1), 15000));
     this.log(`Auto-recovering ${name} (attempt ${this.restartCounts[name]}) in ${delayMs}ms...`);
     setTimeout(() => {
       if (!this.isShuttingDown) {
