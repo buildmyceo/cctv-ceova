@@ -53,7 +53,7 @@ function computeDigestHeader(username, password, method, uri, authHeader, nc = '
 /**
  * Fast TCP probe to find open ports on a host
  */
-function findOpenPorts(host, portList = [554, 5856, 8080, 8081, 4747, 8000, 8888, 1025, 1029, 1055, 80, 8554, 5000, 8088], timeoutMs = 800) {
+function findOpenPorts(host, portList = [554, 8500, 5856, 8080, 8081, 8082, 8090, 4747, 8000, 8888, 1025, 1029, 1055, 80, 8554, 5000, 8088], timeoutMs = 800) {
   return new Promise((resolve) => {
     const openPorts = [];
     let pending = portList.length;

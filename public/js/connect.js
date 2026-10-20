@@ -493,6 +493,21 @@
     }
   } catch (_e) {}
 
+  // Reset Saved Credentials & IP
+  const btnResetCreds = document.getElementById('btnResetCreds');
+  btnResetCreds?.addEventListener('click', async () => {
+    try {
+      localStorage.removeItem('ceova_cctv_local_credentials');
+      if (inputUsername) inputUsername.value = '';
+      if (inputPassword) inputPassword.value = '';
+      if (inputTargetIp) inputTargetIp.value = '';
+      if (inputSubnetHint) inputSubnetHint.value = '';
+      await fetch('/api/cameras', { method: 'DELETE' });
+      appendTerminalLine('Saved credentials and target IP cleared. System ready for fresh Wi-Fi scan.', 'success');
+      alert('Saved credentials and target IP have been reset. You can now enter your new username/password to scan the Wi-Fi network.');
+    } catch (_err) {}
+  });
+
   // Check if there is already an active camera in database
   checkActiveCameraOnLoad();
 
@@ -500,17 +515,27 @@
     try {
       const res = await fetch('/api/cameras');
       if (res.ok) {
-        const cameras = await res.json();
-        if (Array.isArray(cameras) && cameras.length > 0) {
+        const raw = await res.json();
+        const cameras = Array.isArray(raw) ? raw : (raw.cameras || []);
+        if (cameras.length > 0) {
           const cam = cameras[0];
-          appendTerminalLine(`Found registered camera: ${cam.name} (${cam.id})`, 'host');
-          attachLiveCameraStream({
-            id: cam.id,
-            name: cam.name,
-            streamUrl: `/api/cameras/${cam.id}/stream.mjpg`,
-            ip: cam.name.match(/\(([^)]+)\)/)?.[1] || 'Local Network',
-            port: 554
-          });
+          // Check if stream is actually responsive before locking onto it
+          try {
+            const probeRes = await fetch(`/api/cameras/${cam.id}/stream-status`, { signal: AbortSignal.timeout(1500) });
+            const statusData = await probeRes.json();
+            if (statusData && statusData.isStreaming) {
+              appendTerminalLine(`Found active camera stream: ${cam.name} (${cam.id})`, 'host');
+              attachLiveCameraStream({
+                id: cam.id,
+                name: cam.name,
+                streamUrl: `/api/cameras/${cam.id}/stream.mjpg`,
+                ip: cam.name.match(/\(([^)]+)\)/)?.[1] || 'Local Network',
+                port: 554
+              });
+              return;
+            }
+          } catch (_) {}
+          appendTerminalLine(`Previous camera (${cam.name}) is offline or its IP changed. Ready to scan Wi-Fi for active camera.`, 'host');
         }
       }
     } catch (_e) {}
@@ -523,8 +548,11 @@
 
     const username = inputUsername.value.trim();
     const password = inputPassword.value || '';
-    const targetIp = inputTargetIp?.value.trim() || null;
-    const subnetHint = inputSubnetHint?.value.trim() || null;
+
+    // Only use target IP if user explicitly opened the Advanced drawer and entered it
+    const isAdvancedOpen = advancedDrawer && advancedDrawer.classList.contains('open');
+    const targetIp = (isAdvancedOpen && inputTargetIp?.value.trim()) ? inputTargetIp.value.trim() : null;
+    const subnetHint = (isAdvancedOpen && inputSubnetHint?.value.trim()) ? inputSubnetHint.value.trim() : null;
 
     if (!username) {
       alert('Please enter your CCTV / NVR username.');
@@ -534,7 +562,7 @@
     setScanningState(true);
     scannerStage.style.display = 'block';
 
-    // If a target IP was explicitly provided in advanced drawer: test direct
+    // If a target IP was explicitly provided in open advanced drawer: test direct
     if (targetIp) {
       appendTerminalLine(`Initiating direct connection test to ${targetIp}...`, 'host');
       updateProgress(35);
@@ -584,18 +612,19 @@
     }
 
     // Launch Autonomous Network Discovery Bot (Using ONLY Username & Password)
+    // First detects all live IP addresses on that Wi-Fi, then tries user credentials!
     appendTerminalLine('Launching Autonomous Discovery Bot...', 'host');
-    appendTerminalLine(`Sweeping local network with username "${username}"...`, 'host');
+    appendTerminalLine('Step 1: Discovering all active IP addresses on your local Wi-Fi...', 'host');
     updateProgress(5);
-    scanStatusText.textContent = 'AUTONOMOUS SUBNET DISCOVERY ACTIVE...';
-    updateMonitorBadge('SWEEPING NETWORK...', 'warning');
+    scanStatusText.textContent = 'DETECTING ALL WI-FI IP ADDRESSES...';
+    updateMonitorBadge('DISCOVERING WI-FI IPS...', 'warning');
     initEventStream(username, password);
 
     try {
       const res = await fetch('/api/cameras/discover', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, targetIp, subnetHint })
+        body: JSON.stringify({ username, password, targetIp: null, subnetHint })
       });
       const data = await res.json();
       if (!res.ok) {
@@ -680,7 +709,9 @@
         body: JSON.stringify({
           id: camera.id,
           name: `${camera.brand || 'CCTV'} (${camera.ip})`,
-          rtspUrl: camera.rtspUrl,
+          rtspUrl: camera.rawRtspUrl || camera.rtspUrl,
+          streamType: camera.streamType,
+          path: camera.path,
           ip: camera.ip,
           port: camera.port,
           username,

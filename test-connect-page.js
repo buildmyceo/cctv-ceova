@@ -53,6 +53,7 @@ check('connect.html contains AI bot toggle button #btnToggleHumanBot', connectHt
 check('connect.html contains sensitivity slider #rangeSensitivity', connectHtml.includes('id="rangeSensitivity"'));
 check('connect.html contains human activity feed #activityFeedList', connectHtml.includes('id="activityFeedList"'));
 check('connect.html contains audio alert chime #humanAlertChime', connectHtml.includes('id="humanAlertChime"'));
+check('connect.html contains reset button #btnResetCreds', connectHtml.includes('id="btnResetCreds"'));
 check('connect.html loads vendor/tf.min.js', connectHtml.includes('src="vendor/tf.min.js"'));
 check('connect.html loads vendor/coco-ssd.min.js', connectHtml.includes('src="vendor/coco-ssd.min.js"'));
 
@@ -66,18 +67,19 @@ check('connect.js attaches live camera stream (attachLiveCameraStream)', connect
 check('connect.js implements snapshot capture (takeSnapshot)', connectJs.includes('takeSnapshot'));
 check('connect.js handles camera discovery SSE events (initEventStream)', connectJs.includes('initEventStream'));
 check('connect.js handles demo stream testing (btnDemoStream)', connectJs.includes('btnDemoStream'));
+check('connect.js handles credentials reset (btnResetCreds)', connectJs.includes('btnResetCreds'));
 
 // 4. CSS Styling Verifications
 check('connect.css styles human count badge', connectCss.includes('.human-count-badge'));
 check('connect.css styles detection detected state', connectCss.includes('.human-count-badge.detected'));
 check('connect.css styles CCTV monitor stage', connectCss.includes('.cctv-monitor-card'));
 check('connect.css styles HUD canvas', connectCss.includes('.cctv-hud-canvas'));
+check('connect.css styles reset credentials button', connectCss.includes('.btn-reset-creds'));
 
-// 5. Test Live Server HTTP / HTTPS Endpoints
+// 5. Test Live Server HTTP Endpoints
 const PORT = 3080;
-const serverProcess = require('./server.js');
 
-setTimeout(() => {
+function runHttpTests() {
   http.get(`http://127.0.0.1:${PORT}/connect.html`, (res) => {
     check('/connect.html returns HTTP 200', res.statusCode === 200);
 
@@ -105,4 +107,6 @@ setTimeout(() => {
     console.error('HTTP request failed:', err.message);
     process.exit(1);
   });
-}, 800);
+}
+
+runHttpTests();

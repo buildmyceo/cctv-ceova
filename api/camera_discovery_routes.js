@@ -35,6 +35,14 @@ function createCameraDiscoveryRouter(options = {}) {
       }
 
       const orgId = req.organization_id || db.getActiveAccount()?.organization_id || 'ORG-DEFAULT';
+      // Stop existing streams before starting fresh network discovery
+      try {
+        const existingCameras = db.getCameras(orgId);
+        for (const existing of existingCameras) {
+          rtspStreamManager.stopStream(existing.id);
+        }
+      } catch (_e) {}
+
       const result = await cameraDiscoveryBot.startScan({
         username,
         password,
@@ -130,9 +138,9 @@ function createCameraDiscoveryRouter(options = {}) {
 
       // Comprehensive port list: all known camera/NVR/DVR ports
       const FULL_CAMERA_PORTS = [
-        554, 8554, 8000, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8088, 8888,
+        554, 8554, 8000, 8500, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8082, 8088, 8090, 8008, 8888,
         5000, 5556, 5800, 1935, 4747, 5856, 1025, 1026, 1027, 1028, 1029, 1030,
-        1055, 6667, 7080, 7447, 7080, 18080, 8200, 9000, 9090, 10000, 10554,
+        1055, 6667, 7070, 7080, 7447, 7777, 8880, 8889, 18080, 8200, 9000, 9090, 10000, 10554,
         443, 8443, 2020, 3000, 3001, 6000, 7000
       ];
 
@@ -166,7 +174,10 @@ function createCameraDiscoveryRouter(options = {}) {
 
       // Probe all open ports concurrently: RTSP paths in parallel + HTTP in parallel
       // Hard timeout: each port resolved within ~4s total
-      const RTSP_PORTS = new Set([554, 8554, 8000, 37777, 34567, 9559, 9527, 5556, 18080, 8200, 9000, 10554, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 4747, 5856, 8888, 1935]);
+      const RTSP_PORTS = new Set([
+        554, 8554, 8000, 8500, 37777, 34567, 9559, 9527, 5556, 18080, 8200, 9000, 10554,
+        1025, 1026, 1027, 1028, 1029, 1030, 1055, 4747, 5856, 8888, 1935, 8082, 8090, 8008, 7070
+      ]);
       const HTTP_ONLY_PORTS = new Set([80, 443, 8080, 8081, 8088, 5000, 5800, 3000, 3001, 6000, 7000]);
 
       const RTSP_PATHS = [
@@ -329,19 +340,20 @@ function createCameraDiscoveryRouter(options = {}) {
                      (camPath && (camPath.includes('video') || camPath.includes('shot.jpg'))) ||
                      (name && name.includes('IP Webcam'));
 
-      if (isHttp && ip) {
+      if ((!finalRtspUrl || finalRtspUrl.startsWith('/api/') || !finalRtspUrl.includes('://')) && ip) {
         const u = username ? encodeURIComponent(username) : '';
         const p = password ? encodeURIComponent(password) : '';
         const authPart = (u || p) ? `${u}:${p}@` : '';
         const portPart = port ? `:${port}` : '';
-        finalRtspUrl = `http://${authPart}${ip}${portPart}/video`;
-      } else if (!finalRtspUrl && ip) {
+        const defaultPath = isHttp ? '/video' : '/Streaming/Channels/101';
+        const pathPart = camPath ? (camPath.startsWith('/') ? camPath : `/${camPath}`) : defaultPath;
+        finalRtspUrl = isHttp ? `http://${authPart}${ip}${portPart}${pathPart}` : `rtsp://${authPart}${ip}${portPart}${pathPart}`;
+      } else if (isHttp && ip && !finalRtspUrl.includes('@') && (username || password)) {
         const u = username ? encodeURIComponent(username) : '';
         const p = password ? encodeURIComponent(password) : '';
         const authPart = (u || p) ? `${u}:${p}@` : '';
         const portPart = port ? `:${port}` : '';
-        const pathPart = camPath ? (camPath.startsWith('/') ? camPath : `/${camPath}`) : '/';
-        finalRtspUrl = `rtsp://${authPart}${ip}${portPart}${pathPart}`;
+        finalRtspUrl = `http://${authPart}${ip}${portPart}${camPath || '/video'}`;
       }
 
       if (!finalRtspUrl) {

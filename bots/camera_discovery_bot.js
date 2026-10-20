@@ -64,7 +64,11 @@ const STREAM_PATTERNS = [
   { brand: 'Generic RTSP', path: '/', port: 554, desc: 'Root RTSP Stream' }
 ];
 
-const COMMON_CAMERA_PORTS = [554, 8554, 8000, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8088, 8888, 5000, 5556, 4747, 5856, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 18080, 8200, 9000, 10554, 1935, 6667, 8899];
+const COMMON_CAMERA_PORTS = [
+  554, 8554, 8000, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8082, 8088, 8090, 8008, 8500,
+  8888, 5000, 5556, 4747, 5856, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 18080, 8200, 9000,
+  10554, 1935, 6667, 7070, 7777, 8880, 8889, 8899, 9090, 9999, 10000, 2020, 443
+];
 
 class CameraDiscoveryBot extends BaseBot {
   constructor(options = {}) {
@@ -239,13 +243,19 @@ class CameraDiscoveryBot extends BaseBot {
           });
         }
 
-        // Awaken any newly powered or IP-changed devices on the local Wi-Fi
-        await this._wakeUpNetworkNeighbors(subnets);
-
-        // Generate IP list
-        candidateIps = this._generateCandidateIpList(subnets);
+        // Step 1: Detect all live IP addresses on that Wi-Fi
         this.emitUpdate('STEP', {
-          message: `Prepared ${candidateIps.length} candidate addresses from Wi-Fi ARP neighbors, local subnet & camera factory defaults.`
+          message: '🔍 Step 1: Broadcasting to awaken and detect all live IP addresses on the Wi-Fi network...'
+        });
+        const wifiLiveIps = await this._discoverAllWifiIpAddresses(subnets);
+        this.emitUpdate('STEP', {
+          message: `✓ Discovered ${wifiLiveIps.length} active device(s) on Wi-Fi (${wifi?.interfaceName || 'en0'}): ${wifiLiveIps.slice(0, 10).join(', ')}${wifiLiveIps.length > 10 ? ' ... and ' + (wifiLiveIps.length - 10) + ' more' : ''}`
+        });
+
+        // Step 2: Generate candidate IP list, prioritizing all detected Wi-Fi IPs first
+        candidateIps = this._generateCandidateIpList(subnets, wifiLiveIps);
+        this.emitUpdate('STEP', {
+          message: `🔍 Step 2: Testing CCTV credentials against ${candidateIps.length} endpoints (prioritizing ${wifiLiveIps.length} detected Wi-Fi hosts)...`
         });
       }
 
@@ -382,6 +392,21 @@ class CameraDiscoveryBot extends BaseBot {
   }
 
   /**
+   * Bitwise IPv4 broadcast address calculation: (ip & mask) | (~mask & 255)
+   */
+  _calculateBroadcast(ip, netmask) {
+    try {
+      const ipParts = ip.split('.').map(Number);
+      const maskParts = (netmask || '255.255.255.0').split('.').map(Number);
+      const broadcastParts = ipParts.map((part, i) => (part & maskParts[i]) | (~maskParts[i] & 255));
+      return broadcastParts.join('.');
+    } catch (_) {
+      const parts = ip.split('.');
+      return `${parts[0]}.${parts[1]}.${parts[2]}.255`;
+    }
+  }
+
+  /**
    * Send rapid broadcast ping to awaken any newly powered or IP-changed camera devices
    */
   async _wakeUpNetworkNeighbors(subnets = []) {
@@ -402,6 +427,47 @@ class CameraDiscoveryBot extends BaseBot {
       await new Promise(r => setTimeout(r, 200));
       try { socket.close(); } catch (_) {}
     } catch (_) {}
+  }
+
+  /**
+   * Actively discover all live IP addresses on the Wi-Fi network:
+   * 1. Broadcast ICMP ping across the Wi-Fi broadcast address (e.g. 10.12.255.255) and 255.255.255.255
+   * 2. Awaken devices via UDP broadcast
+   * 3. Harvest all active entries from the OS ARP cache with verified hardware MACs
+   */
+  async _discoverAllWifiIpAddresses(subnets = []) {
+    const discoveredIps = new Set();
+    const hostIps = new Set(['127.0.0.1', 'localhost']);
+    for (const s of subnets) {
+      if (s.ip) hostIps.add(s.ip);
+    }
+
+    const wifi = subnets.find(s => s.isWifi) || subnets[0];
+    const iface = wifi?.interfaceName || 'en0';
+
+    // 1. Send ICMP broadcast ping on Wi-Fi broadcast and global broadcast
+    try {
+      const { exec } = require('child_process');
+      const pingTasks = [];
+      if (wifi?.broadcast) {
+        pingTasks.push(new Promise(r => exec(`ping -c 2 -W 800 ${wifi.broadcast} 2>/dev/null`, { timeout: 2000 }, () => r())));
+      }
+      pingTasks.push(new Promise(r => exec(`ping -c 2 -W 800 255.255.255.255 2>/dev/null`, { timeout: 2000 }, () => r())));
+      await Promise.all(pingTasks);
+    } catch (_) {}
+
+    // 2. Also send UDP broadcast ping
+    await this._wakeUpNetworkNeighbors(subnets);
+
+    // 3. Harvest active ARP neighbors with valid hardware MAC addresses
+    for (const s of subnets) {
+      const arpList = this._getArpNeighbors(s.interfaceName || iface);
+      for (const ip of arpList) {
+        if (!hostIps.has(ip)) discoveredIps.add(ip);
+      }
+    }
+
+    return Array.from(discoveredIps);
   }
 
   /**
@@ -453,12 +519,13 @@ class CameraDiscoveryBot extends BaseBot {
         if (addr.family === 'IPv4' && !addr.internal) {
           const parts = addr.address.split('.');
           const baseSubnet = `${parts[0]}.${parts[1]}.${parts[2]}`;
+          const broadcast = this._calculateBroadcast(addr.address, addr.netmask);
           subnets.push({
             interfaceName: name,
             isWifi: name === 'en0' || name.startsWith('wlan') || name.startsWith('wi'),
             ip: addr.address,
             netmask: addr.netmask,
-            broadcast: `${baseSubnet}.255`,
+            broadcast,
             cidr: addr.netmask === '255.255.0.0' ? `${parts[0]}.${parts[1]}.0.0/16` : `${baseSubnet}.0/24`,
             baseSubnet
           });
@@ -484,12 +551,19 @@ class CameraDiscoveryBot extends BaseBot {
   }
 
   /**
-   * Generate candidate IP list across all active subnets, ARP neighbors, and factory defaults
-   * Filters out the host machine's own IP address
+   * Generate candidate IP list across detected Wi-Fi live devices, subnets, ARP neighbors, and factory defaults
+   * Filters out the host machine's own IP address and prioritizes detected Wi-Fi devices first
    */
-  _generateCandidateIpList(subnets) {
+  _generateCandidateIpList(subnets, prioritizedWifiIps = []) {
     const hostIps = new Set(['127.0.0.1', 'localhost']);
     const orderedIps = new Set();
+
+    // 0. Put actively discovered Wi-Fi live IPs FIRST and foremost
+    if (Array.isArray(prioritizedWifiIps)) {
+      for (const ip of prioritizedWifiIps) {
+        if (!hostIps.has(ip)) orderedIps.add(ip);
+      }
+    }
 
     // 1. Harvest ARP neighbors across all detected interfaces
     for (const subnet of subnets) {
@@ -701,7 +775,7 @@ class CameraDiscoveryBot extends BaseBot {
 
     // High probability camera ports for initial sweep (CCTV, NVR, DVR, IP Webcam, DroidCam)
     const PRIMARY_CAMERA_PORTS = [
-      554, 8554, 8000, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8088, 8888,
+      554, 8554, 8000, 8500, 37777, 34567, 9559, 9527, 80, 8080, 8081, 8088, 8888,
       5000, 5556, 4747, 5856, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 18080,
       8200, 9000, 10554, 1935, 2020, 443, 8899, 6667, 7080, 7447, 8443, 9090,
       2563, 8082, 8083, 8085, 8090, 8181, 8880, 7070, 7777, 8889, 9999, 10000
@@ -740,7 +814,7 @@ class CameraDiscoveryBot extends BaseBot {
 
     // Common top ports for general subnet IP sweep
     const QUICK_SUBSET_PORTS = [
-      554, 8000, 37777, 34567, 80, 8080, 5000, 8554, 4747, 2563, 1025, 1029, 8888, 1935, 8899
+      554, 8000, 8500, 37777, 34567, 80, 8080, 8082, 5000, 8554, 4747, 2563, 1025, 1029, 8888, 1935, 8899
     ];
 
     // Step 1: Rapid Phase 1 Sweep across candidate IPs
@@ -887,8 +961,9 @@ class CameraDiscoveryBot extends BaseBot {
     const { username, password } = this.targetCredentials;
 
     const RTSP_PORTS = new Set([
-      554, 8554, 8000, 37777, 34567, 9559, 9527, 5556, 18080, 8200, 9000,
-      10554, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 4747, 5856, 8888, 1935, 2020
+      554, 8554, 8000, 8500, 37777, 34567, 9559, 9527, 5556, 18080, 8200, 9000,
+      10554, 1025, 1026, 1027, 1028, 1029, 1030, 1055, 4747, 5856, 8888, 1935, 2020,
+      8082, 8090, 8008, 7070
     ]);
     const HTTP_ONLY_PORTS = new Set([80, 443, 8080, 8081, 8088, 5000, 5800, 3000, 3001, 6000, 7000]);
 
@@ -915,27 +990,20 @@ class CameraDiscoveryBot extends BaseBot {
 
       const tasks = [];
 
-      // 1. Parallel RTSP Probe (all camera media ports except plain web 80/443)
+      // 1. Parallel RTSP Probe (all candidate camera ports except plain web 80/443)
       const tryRtsp = host.port !== 80 && host.port !== 443;
       if (tryRtsp) {
-        const pre = await this._testRtspHandshake(host.ip, host.port, '/Streaming/Channels/101', username, password);
-        if (pre.success) {
-          tasks.push(Promise.resolve({ type: 'RTSP', path: '/Streaming/Channels/101', result: pre }));
-        } else if (pre.status === 'AUTH_FAILED') {
-          hostAuthFailed = true;
-        } else if (pre.isRtsp) {
-          const rtspTask = Promise.any(
-            RTSP_PATHS.slice(1).map(path =>
-              this._testRtspHandshake(host.ip, host.port, path, username, password)
-                .then(r => {
-                  if (r.success) return { type: 'RTSP', path, result: r };
-                  if (r.status === 'AUTH_FAILED') { hostAuthFailed = true; }
-                  return Promise.reject(new Error('not matched'));
-                })
-            )
-          ).catch(() => null);
-          tasks.push(rtspTask);
-        }
+        const rtspTask = Promise.any(
+          RTSP_PATHS.map(path =>
+            this._testRtspHandshake(host.ip, host.port, path, username, password)
+              .then(r => {
+                if (r.success) return { type: 'RTSP', path, result: r };
+                if (r.status === 'AUTH_FAILED') { hostAuthFailed = true; }
+                return Promise.reject(new Error('not matched'));
+              })
+          )
+        ).catch(() => null);
+        tasks.push(rtspTask);
       }
 
       // 2. Concurrent HTTP / MJPEG Probe
