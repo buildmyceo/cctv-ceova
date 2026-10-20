@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#000000">
+  <title>Ceova Phone Camera Broadcaster</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css?v=2.9">
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📱</text></svg>">
+  <style>
+    /* Mobile-specific touches */
+    html, body {
+      position: fixed;
+      width: 100%;
+      height: 100%;
+      height: 100dvh;
+      overflow: hidden;
+      background: #000;
+      margin: 0;
+      padding: 0;
+    }
+  </style>
+</head>
+<body class="camera-mobile-view">
+  <!-- Live Camera Video Preview -->
+  <video id="cameraPreview" class="camera-preview" autoplay playsinline muted></video>
+
+  <!-- Live Human Detection HUD Canvas -->
+  <canvas id="cameraHudCanvas" class="camera-hud-canvas"></canvas>
+
+  <!-- Fallback Canvas for frame capture / fallback streaming -->
+  <canvas id="fallbackCanvas" style="display:none;"></canvas>
+
+  <!-- Mobile HUD Controls -->
+  <div class="mobile-hud" id="mobileHud">
+    <!-- Top Bar: Status & Telemetry -->
+    <div class="mobile-top-bar">
+      <div class="mobile-status-badge">
+        <span class="pulse-dot" id="mobilePulse"></span>
+        <span id="mobileStatusText">CONNECTING...</span>
+      </div>
+      <div class="mobile-status-badge" id="phoneBotBadge" style="border-color:var(--accent-green); display:none;">
+        <span class="bot-indicator-dot active"></span>
+        <span id="phoneBotText" style="color:var(--accent-green)">HUMANS: 0</span>
+      </div>
+      <!-- One-Tap Fullscreen Pill -->
+      <div class="mobile-status-badge" id="btnFullscreenPill" style="cursor:pointer; border-color:var(--accent-cyan); background:rgba(0,240,255,0.12);">
+        <span id="fsIconPill" style="font-size:14px;">⛶</span>
+        <span id="fsTextPill" style="color:var(--accent-cyan); font-weight:bold;">FULLSCREEN</span>
+      </div>
+      <div class="mobile-status-badge" style="border-color:rgba(255,255,255,0.2);">
+        <span>ROOM: <strong id="mobileRoomBadge" style="color:var(--accent-cyan)">CAM-1</strong></span>
+      </div>
+    </div>
+
+    <!-- Bottom Controls: Flip, Flash, Mute, Fullscreen, Quality, Battery Saver -->
+    <div class="mobile-bottom-controls">
+      <!-- Resolution & Info -->
+      <div style="font-family:var(--font-mono); font-size:0.75rem; color:rgba(255,255,255,0.7); text-shadow:0 1px 3px #000;">
+        <span id="mobileResText">1080p FHD</span> • <span id="mobileBitrateText">WebRTC Active</span>
+      </div>
+
+      <div class="mobile-control-row">
+        <!-- Flip Camera -->
+        <button class="mobile-btn-circle" id="btnFlipCam" title="Flip Camera">
+          <svg class="icon" style="width:24px; height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+        </button>
+
+        <!-- Orientation Toggle (Auto / 16:9 Landscape / 9:16 Portrait) -->
+        <button class="mobile-btn-circle" id="btnOrientation" title="Toggle Orientation (Auto / 16:9 Landscape / 9:16 Portrait)">
+          <svg class="icon" style="width:24px; height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <rect x="3" y="5" width="18" height="14" rx="2" stroke-width="2"/>
+          </svg>
+        </button>
+
+        <!-- Torch / Flashlight Toggle -->
+        <button class="mobile-btn-circle" id="btnTorch" title="Toggle Flashlight">
+          <svg class="icon" style="width:24px; height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+        </button>
+
+        <!-- AI Human Bot Toggle -->
+        <button class="mobile-btn-circle" id="btnPhoneBot" title="Toggle AI Human Detection Bot">
+          <svg class="icon" style="width:24px; height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M16 7a4 4 0 11-8 0 4 4 0 018 0zM12 14a7 7 0 00-7 7h14a7 7 0 00-7-7z" />
+          </svg>
+        </button>
+
+
+        <!-- Fullscreen Button -->
+        <button class="mobile-btn-circle" id="btnFullscreen" title="Toggle Fullscreen">
+          <svg class="icon" style="width:24px; height:24px;" id="fsIconSvg" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 8V4m0 0h4M4 4l5 5m11-5h-4m4 0v4m0-4l-5 5M4 16v4m0 0h4m-4 0l5-5m11 5l-5-5m5 5v-4m0 4h-4" />
+          </svg>
+        </button>
+
+        <!-- Battery Saver / Screen Dimmer -->
+        <button class="mobile-btn-circle" id="btnDimmer" title="Battery Saver (Screen Dimmer)">
+          <svg class="icon" style="width:24px; height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+          </svg>
+        </button>
+
+        <!-- Phone Vibration Test Button -->
+        <button class="mobile-btn-circle" id="btnPhoneVibrate" title="Test Phone Vibration">
+          <svg class="icon" style="width:24px; height:24px;" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <rect x="7" y="2" width="10" height="20" rx="2" stroke-width="1.8" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M11 18h2" />
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 8a4.5 4.5 0 000 8m18-8a4.5 4.5 0 010 8" />
+          </svg>
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Remote Vibration Alert Toast -->
+  <div class="vibration-toast hidden" id="phoneVibrateToast">
+    <div class="vibration-toast-inner">
+      <span class="vibration-icon">📳</span>
+      <span class="vibration-text">REMOTE VIBRATION</span>
+    </div>
+  </div>
+
+  <!-- Battery Saver Dimmed Screen (Keeps camera streaming while turning screen black to save power) -->
+  <div class="battery-saver-screen" id="batterySaverScreen">
+    <p style="font-size:0.85rem; color:#666; margin-bottom:1rem; font-family:var(--font-mono);">
+      🎥 CAMERA STREAMING ACTIVE IN BACKGROUND
+    </p>
+    <button class="battery-saver-unlock-btn" id="btnWakeScreen">
+      TAP TO WAKE SCREEN
+    </button>
+  </div>
+
+  <!-- Scripts -->
+  <script src="vendor/tf.min.js"></script>
+  <script src="vendor/coco-ssd.min.js"></script>
+  <script src="js/camera.js?v=2.9"></script>
+</body>
+</html>

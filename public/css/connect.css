@@ -1,0 +1,899 @@
+/* =========================================================
+   CEOVA CCTV // Autonomous Camera Discovery & AI Human Detection
+   public/css/connect.css
+   ========================================================= */
+
+:root {
+  --accent-sky: #38bdf8;
+  --accent-sky-subtle: rgba(56, 189, 248, 0.15);
+  --accent-green: #22c55e;
+  --accent-green-glow: rgba(34, 197, 94, 0.4);
+  --accent-red: #ef4444;
+  --bg-glass-elevated: rgba(14, 14, 20, 0.82);
+  --border-glass-light: rgba(255, 255, 255, 0.14);
+  --border-glass: rgba(255, 255, 255, 0.08);
+}
+
+.connect-container {
+  max-width: 1380px;
+  margin: 0 auto;
+  padding: 2rem 1.5rem 4rem 1.5rem;
+}
+
+/* Hero Section */
+.connect-hero {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.connect-hero-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 16px;
+  border-radius: 9999px;
+  background: #18181b;
+  border: 1px solid #27272a;
+  color: #ffffff;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  margin-bottom: 1rem;
+}
+
+.connect-hero h1 {
+  font-size: 2.3rem;
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  color: #ffffff;
+  margin-bottom: 0.65rem;
+}
+
+.connect-hero h1 span.gradient-text {
+  background: linear-gradient(135deg, #ffffff 40%, var(--accent-green) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.connect-hero p {
+  color: #94a3b8;
+  font-size: 1rem;
+  max-width: 720px;
+  margin: 0 auto;
+  line-height: 1.6;
+}
+
+/* Main Grid Layout */
+.connect-layout {
+  display: grid;
+  grid-template-columns: 440px 1fr;
+  gap: 1.75rem;
+  align-items: start;
+}
+
+@media (max-width: 1080px) {
+  .connect-layout {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Glass Card */
+.glass-panel {
+  background: var(--bg-glass-elevated);
+  border: 1px solid var(--border-glass-light);
+  border-radius: 18px;
+  padding: 1.6rem;
+  box-shadow: 0 20px 40px -15px rgba(0, 0, 0, 0.7), 0 0 25px rgba(56, 189, 248, 0.05);
+  backdrop-filter: blur(20px);
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1.25rem;
+  padding-bottom: 0.9rem;
+  border-bottom: 1px solid var(--border-glass);
+}
+
+.panel-header h3 {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.panel-header .badge {
+  font-size: 0.72rem;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--accent-green);
+  border: 1px solid rgba(34, 197, 94, 0.3);
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.panel-header .badge.active {
+  background: rgba(34, 197, 94, 0.25);
+  box-shadow: 0 0 12px var(--accent-green-glow);
+}
+
+/* Form Controls */
+.form-group {
+  margin-bottom: 1.15rem;
+}
+
+.form-label {
+  display: block;
+  font-size: 0.8rem;
+  font-weight: 700;
+  color: #cbd5e1;
+  margin-bottom: 0.45rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.form-label span {
+  color: #64748b;
+  font-weight: 400;
+  text-transform: none;
+}
+
+.input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-icon {
+  position: absolute;
+  left: 14px;
+  color: #64748b;
+  font-size: 1rem;
+  pointer-events: none;
+}
+
+.custom-input {
+  width: 100%;
+  box-sizing: border-box;
+  background: rgba(8, 8, 12, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  padding: 12px 14px 12px 42px;
+  color: #ffffff;
+  font-size: 0.95rem;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+.custom-input:focus {
+  outline: none;
+  border-color: var(--accent-sky);
+  box-shadow: 0 0 0 3px var(--accent-sky-subtle);
+  background: rgba(12, 12, 18, 0.95);
+}
+
+.password-toggle {
+  position: absolute;
+  right: 14px;
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 4px;
+  font-size: 0.9rem;
+}
+
+.password-toggle:hover {
+  color: #cbd5e1;
+}
+
+/* Accordion for optional advanced scope */
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 0.82rem;
+  cursor: pointer;
+  padding: 0.4rem 0;
+  margin-bottom: 0.85rem;
+  font-weight: 500;
+  transition: color 0.2s;
+}
+
+.advanced-toggle:hover {
+  color: var(--accent-sky);
+}
+
+.advanced-drawer {
+  display: none;
+  padding-top: 0.5rem;
+  margin-bottom: 1.15rem;
+  border-top: 1px dashed var(--border-glass);
+}
+
+.advanced-drawer.open {
+  display: block;
+}
+
+/* Action Buttons */
+.btn-launch-scan {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  background: #ffffff;
+  border: 1px solid #ffffff;
+  color: #000000;
+  font-size: 0.98rem;
+  font-weight: 700;
+  padding: 13px 20px;
+  border-radius: 12px;
+  cursor: pointer;
+  box-shadow: 0 4px 14px rgba(255, 255, 255, 0.15);
+  transition: all 0.22s ease;
+  letter-spacing: 0.02em;
+}
+
+.btn-launch-scan:hover:not(:disabled) {
+  transform: translateY(-1px);
+  background: #f4f4f5;
+  box-shadow: 0 8px 24px rgba(255, 255, 255, 0.3);
+}
+
+.btn-launch-scan:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+  filter: grayscale(0.4);
+}
+
+.btn-demo-stream {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #e4e4e7;
+  font-size: 0.84rem;
+  font-weight: 600;
+  padding: 10px 16px;
+  border-radius: 10px;
+  cursor: pointer;
+  margin-top: 0.75rem;
+  transition: all 0.2s ease;
+}
+
+.btn-demo-stream:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #ffffff;
+}
+
+.btn-stop-scan {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #f87171;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-stop-scan:hover {
+  background: rgba(239, 68, 68, 0.25);
+}
+
+/* Active Camera Status Card */
+.active-camera-box {
+  display: none;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 14px;
+  padding: 1.1rem;
+  margin-top: 1.25rem;
+}
+
+.active-camera-box.visible {
+  display: block;
+}
+
+.active-camera-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.active-camera-title {
+  font-size: 0.92rem;
+  font-weight: 700;
+  color: #ffffff;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.btn-disconnect-cam {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #f87171;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-disconnect-cam:hover {
+  background: rgba(239, 68, 68, 0.3);
+}
+
+.active-camera-meta {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.76rem;
+  color: #a1a1aa;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+/* Radar & Scanner Status */
+.radar-wrapper {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  margin: 0.5rem auto 1.25rem auto;
+}
+
+.radar-circle {
+  width: 100%;
+  height: 100%;
+  border-radius: 50%;
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  position: relative;
+  overflow: hidden;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.05) 0%, rgba(0, 0, 0, 0.4) 70%);
+}
+
+.radar-sweep {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 50%;
+  height: 50%;
+  transform-origin: 0 0;
+  background: linear-gradient(45deg, rgba(56, 189, 248, 0.6) 0%, transparent 60%);
+  animation: radarRotate 2s linear infinite;
+  display: none;
+}
+
+.radar-wrapper.active .radar-sweep {
+  display: block;
+}
+
+.radar-crosshair-h, .radar-crosshair-v {
+  position: absolute;
+  background: rgba(56, 189, 248, 0.15);
+}
+
+.radar-crosshair-h {
+  top: 50%;
+  left: 0;
+  right: 0;
+  height: 1px;
+}
+
+.radar-crosshair-v {
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+}
+
+@keyframes radarRotate {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+/* Progress Bar */
+.scan-progress-box {
+  margin-bottom: 1.25rem;
+}
+
+.progress-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8rem;
+  color: #94a3b8;
+  margin-bottom: 0.45rem;
+}
+
+.progress-track {
+  height: 7px;
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.progress-fill {
+  height: 100%;
+  background: #ffffff;
+  border-radius: 4px;
+  width: 0%;
+  transition: width 0.3s ease;
+}
+
+/* Live Terminal Log */
+.telemetry-terminal {
+  background: #050508;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 1rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  height: 200px;
+  overflow-y: auto;
+  color: #a1a1aa;
+  box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.8);
+}
+
+.telemetry-terminal::-webkit-scrollbar {
+  width: 6px;
+}
+.telemetry-terminal::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.15);
+  border-radius: 3px;
+}
+
+.terminal-line {
+  line-height: 1.55;
+  word-break: break-all;
+}
+
+.terminal-line.success {
+  color: #4ade80;
+  font-weight: 600;
+}
+
+.terminal-line.host {
+  color: #38bdf8;
+}
+
+.terminal-line.error {
+  color: #f87171;
+}
+
+/* Discovered Cameras Cards */
+.matched-cameras-container {
+  margin-top: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.camera-match-card {
+  background: rgba(14, 165, 233, 0.05);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+  border-radius: 14px;
+  padding: 1.1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  transition: all 0.25s ease;
+}
+
+.camera-match-card:hover {
+  background: rgba(14, 165, 233, 0.09);
+  border-color: rgba(56, 189, 248, 0.6);
+  transform: translateY(-1px);
+}
+
+.camera-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.camera-brand-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #38bdf8;
+}
+
+.camera-brand-tag .dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #10b981;
+}
+
+.camera-title {
+  font-size: 1rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.camera-rtsp-url {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: #94a3b8;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 3px 8px;
+  border-radius: 4px;
+  display: inline-block;
+  max-width: 380px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.btn-connect-cam {
+  background: #ffffff;
+  border: 1px solid #ffffff;
+  color: #000000;
+  padding: 9px 16px;
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all 0.2s;
+}
+
+.btn-connect-cam:hover {
+  background: #e4e4e7;
+}
+
+/* =========================================================
+   LIVE CCTV VIDEO MONITOR & AI HUMAN DETECTION STAGE
+   ========================================================= */
+
+.cctv-stage-wrapper {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.cctv-monitor-card {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  background: #020205;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 16px;
+  overflow: hidden;
+  box-shadow: 0 25px 60px -15px rgba(0, 0, 0, 0.9), inset 0 0 30px rgba(0, 0, 0, 0.8);
+}
+
+.cctv-video-view,
+.cctv-img-view {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000000;
+  z-index: 1;
+}
+
+.cctv-hud-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.cctv-scanlines {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0px,
+    transparent 3px,
+    rgba(0, 0, 0, 0.22) 3px,
+    rgba(0, 0, 0, 0.22) 4px
+  );
+  pointer-events: none;
+  z-index: 6;
+  opacity: 0.45;
+}
+
+/* CCTV OSD Overlay */
+.cctv-osd-top {
+  position: absolute;
+  top: 14px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  z-index: 10;
+  pointer-events: none;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.cctv-osd-bottom {
+  position: absolute;
+  bottom: 12px;
+  left: 16px;
+  right: 16px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  z-index: 10;
+  pointer-events: none;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.72rem;
+  color: #a1a1aa;
+}
+
+.osd-cam-badge {
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 8px;
+  padding: 5px 10px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: #ffffff;
+  backdrop-filter: blur(8px);
+}
+
+.rec-pulse-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #ef4444;
+  box-shadow: 0 0 8px #ef4444;
+  animation: recPulse 1.2s infinite;
+}
+
+@keyframes recPulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.3; transform: scale(0.85); }
+}
+
+/* Neon Green Human Counter Badge */
+.human-count-badge {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0, 0, 0, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 10px;
+  padding: 6px 14px;
+  font-size: 0.88rem;
+  font-weight: 800;
+  color: #94a3b8;
+  backdrop-filter: blur(8px);
+  transition: all 0.25s ease;
+  letter-spacing: 0.04em;
+}
+
+.human-count-badge.detected {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.65);
+  color: #4ade80;
+  box-shadow: 0 0 20px rgba(34, 197, 94, 0.45);
+}
+
+.human-count-badge .count-number {
+  font-size: 1.15rem;
+  font-weight: 900;
+  color: inherit;
+}
+
+/* Video Stage Placeholder / Standby */
+.cctv-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: #050508;
+  z-index: 2;
+  color: #71717a;
+  text-align: center;
+  padding: 2rem;
+}
+
+.cctv-placeholder .placeholder-icon {
+  font-size: 2.8rem;
+  opacity: 0.4;
+}
+
+.cctv-placeholder h4 {
+  color: #e4e4e7;
+  font-size: 1.1rem;
+  margin: 0;
+  font-weight: 700;
+}
+
+.cctv-placeholder p {
+  font-size: 0.85rem;
+  max-width: 400px;
+  margin: 0;
+  line-height: 1.5;
+}
+
+/* Control Bar Beneath Video */
+.cctv-controls-strip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  background: rgba(12, 12, 18, 0.8);
+  border: 1px solid var(--border-glass-light);
+  border-radius: 14px;
+  padding: 10px 14px;
+}
+
+.controls-left, .controls-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.control-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  color: #ffffff;
+  padding: 7px 13px;
+  border-radius: 8px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.control-btn:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.control-btn.active {
+  background: rgba(34, 197, 94, 0.2);
+  border-color: rgba(34, 197, 94, 0.5);
+  color: #4ade80;
+}
+
+.sensitivity-wrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.78rem;
+  color: #a1a1aa;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+.sensitivity-slider {
+  width: 90px;
+  height: 4px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.btn-open-hub {
+  background: #ffffff;
+  border: 1px solid #ffffff;
+  color: #000000;
+  padding: 7px 14px;
+  border-radius: 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s;
+}
+
+.btn-open-hub:hover {
+  background: #e4e4e7;
+}
+
+/* Detection Activity Log */
+.detection-activity-panel {
+  margin-top: 1.5rem;
+}
+
+.activity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.75rem;
+}
+
+.activity-title {
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #cbd5e1;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.activity-stats {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  color: #94a3b8;
+}
+
+.activity-feed-list {
+  background: #050508;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 0.8rem;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.78rem;
+  max-height: 190px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.activity-entry {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 10px;
+  background: rgba(255, 255, 255, 0.03);
+  border-radius: 6px;
+  border-left: 3px solid var(--accent-green);
+  animation: fadeIn 0.25s ease;
+}
+
+.activity-entry.departed {
+  border-left-color: #f59e0b;
+}
+
+.activity-entry.camera {
+  border-left-color: var(--accent-sky);
+}
+
+.activity-time {
+  color: #64748b;
+  font-size: 0.72rem;
+}
+
+.activity-text {
+  color: #e4e4e7;
+  font-weight: 500;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: translateY(0); }
+}

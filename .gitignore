@@ -38,4 +38,5 @@ __pycache__/
 
 # Test scratch files
 tests/test_human.jpg
+*.pt
 tests/person_sample.jpg

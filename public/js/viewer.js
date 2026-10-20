@@ -1,0 +1,5261 @@
+// =========================================================
+// CEOVA CCTV VIEWER & COMMAND CENTER ENGINE
+// =========================================================
+
+(function () {
+  // State variables
+  let ws = null;
+  let peerConnection = null;
+  let localStream = null;
+  let isConnected = false;
+  let activeRoomId = 'CAM-1';
+  let isTorchOn = false;
+  let isFrontCamera = false;
+  
+  // Recording state
+  let mediaRecorder = null;
+  let recordedChunks = [];
+  let recordingStartTime = 0;
+  let recordingTimerInterval = null;
+
+  // In-stream QR Scanner state
+  let qrScannerActive = false;
+  let qrScanInterval = null;
+  let barcodeDetector = null;
+
+  // AI Human Detection Bot state (Detects ONLY humans with green targeting box)
+  let humanBotActive = false;
+  let humanModel = null;
+  let humanModelLoading = false;
+  let humanDetectionAnimId = null;
+  let lastHumanDetectionTime = 0;
+  let humanDetectionConfidence = 0.30; // default 30% for high sensitivity to seated/distant humans
+  let currentDetectedHumans = [];
+
+  // DOM Elements
+  const remoteVideo = document.getElementById('remoteVideo');
+  const motionCanvas = document.getElementById('motionCanvas');
+  const standbyOverlay = document.getElementById('standbyOverlay');
+  const pairingQrImg = document.getElementById('pairingQrImg');
+  const networkIpSelect = document.getElementById('networkIpSelect');
+  const cameraUrlInput = document.getElementById('cameraUrlInput');
+  const btnCopyLink = document.getElementById('btnCopyLink');
+  const btnOpenTab = document.getElementById('btnOpenTab');
+  const systemStatusPill = document.getElementById('systemStatusPill');
+  const systemPulse = document.getElementById('systemPulse');
+  const systemStatusText = document.getElementById('systemStatusText');
+  const streamProtocolText = document.getElementById('streamProtocolText');
+  const liveClock = document.getElementById('liveClock');
+  const osdTimestamp = document.getElementById('osdTimestamp');
+  const osdStatus = document.getElementById('osdStatus');
+  const fpsMeter = document.getElementById('fpsMeter');
+  const pingMeter = document.getElementById('pingMeter');
+  const resMeter = document.getElementById('resMeter');
+  const osdBattery = document.getElementById('osdBattery');
+  const osdTorch = document.getElementById('osdTorch');
+  const recBadge = document.getElementById('recBadge');
+  const recTimer = document.getElementById('recTimer');
+  const btnSnapshot = document.getElementById('btnSnapshot');
+  const btnRecord = document.getElementById('btnRecord');
+  const recordBtnText = document.getElementById('recordBtnText');
+  const btnRemoteTorch = document.getElementById('btnRemoteTorch');
+  const btnRemoteFlip = document.getElementById('btnRemoteFlip');
+  const btnRemoteVibrate = document.getElementById('btnRemoteVibrate');
+  const vibrateBtnText = document.getElementById('vibrateBtnText');
+  const osdVibrate = document.getElementById('osdVibrate');
+  const btnQrScanToggle = document.getElementById('btnQrScanToggle');
+  const btnShowQr = document.getElementById('btnShowQr');
+  const btnFullscreen = document.getElementById('btnFullscreen');
+  const monitorWrapper = document.getElementById('monitorWrapper');
+  const osdAspectBadge = document.getElementById('osdAspectBadge');
+  const btnAspectToggle = document.getElementById('btnAspectToggle');
+  const aspectBtnText = document.getElementById('aspectBtnText');
+  const btnFitToggle = document.getElementById('btnFitToggle');
+  const fitBtnText = document.getElementById('fitBtnText');
+  const btnRotateToggle = document.getElementById('btnRotateToggle');
+  const rotateBtnText = document.getElementById('rotateBtnText');
+  const eventsList = document.getElementById('eventsList');
+  const emptyLogState = document.getElementById('emptyLogState');
+  const logCount = document.getElementById('logCount');
+  const telemetryRoom = document.getElementById('telemetryRoom');
+  const telemetryWs = document.getElementById('telemetryWs');
+  const telemetryIce = document.getElementById('telemetryIce');
+  const alertChime = document.getElementById('alertChime');
+  const qrResultCard = document.getElementById('qrResultCard');
+  const qrResultContent = document.getElementById('qrResultContent');
+  const btnOpenQrUrl = document.getElementById('btnOpenQrUrl');
+  const btnCloseQrResult = document.getElementById('btnCloseQrResult');
+
+  // AI Human Detection Bot & Engine DOM Elements
+  const btnAiEngineToggle = document.getElementById('btnAiEngineToggle');
+  const aiEngineBtnText = document.getElementById('aiEngineBtnText');
+  const btnOpenMemoryGallery = document.getElementById('btnOpenMemoryGallery');
+  let aiEngineMode = 'yolo'; // 'yolo' (YOLOv8 + OpenCV) or 'mobilenet' (Browser COCO-SSD)
+
+  const btnHumanBotToggle = document.getElementById('btnHumanBotToggle');
+  const humanBotBtnText = document.getElementById('humanBotBtnText');
+  const osdHumanBot = document.getElementById('osdHumanBot');
+  const humanCountMeter = document.getElementById('humanCountMeter');
+  const telemetryBotStatus = document.getElementById('telemetryBotStatus');
+  const telemetryHumanCount = document.getElementById('telemetryHumanCount');
+  const telemetryTotalTracked = document.getElementById('telemetryTotalTracked');
+  const btnResetTrackCount = document.getElementById('btnResetTrackCount');
+  const confidenceValText = document.getElementById('confidenceValText');
+  const botConfidence = document.getElementById('botConfidence');
+  const botTelemetryDot = document.getElementById('botTelemetryDot');
+
+  let incidentCounter = 0;
+
+  // Initialize Room ID from URL if provided (e.g. ?room=CAM-2)
+  const urlParams = new URLSearchParams(window.location.search);
+  if (urlParams.get('room')) {
+    activeRoomId = urlParams.get('room');
+  }
+  telemetryRoom.textContent = activeRoomId;
+
+  // 1. Live Timestamp Clock
+  function updateClock() {
+    const now = new Date();
+    const dateStr = now.toISOString().slice(0, 10);
+    const timeStr = now.toTimeString().split(' ')[0];
+    const millis = String(now.getMilliseconds()).padStart(3, '0');
+    const fullTime = `${dateStr} ${timeStr}.${millis}`;
+
+    liveClock.textContent = `${timeStr} UTC`;
+    osdTimestamp.textContent = fullTime;
+  }
+  setInterval(updateClock, 50);
+
+  // 2. Fetch Network Info & Generate Pairing QR Code
+  async function setupNetworkAndQR() {
+    if (!networkIpSelect) return;
+    try {
+      const res = await fetch('/api/info');
+      const info = await res.json();
+      
+      // Populate IP Selector
+      networkIpSelect.innerHTML = '';
+      
+      // Add detected local IPs
+      const ips = info.ips || [];
+      if (ips.length === 0) ips.push(info.primaryIp || window.location.hostname);
+
+      ips.forEach(ip => {
+        const opt = document.createElement('option');
+        opt.value = `${info.protocol || 'https'}://${ip}:${info.port || window.location.port}`;
+        opt.textContent = `${ip} (WiFi / LAN)`;
+        networkIpSelect.appendChild(opt);
+      });
+
+      // Add localhost option
+      const localOpt = document.createElement('option');
+      localOpt.value = `${window.location.protocol}//${window.location.host}`;
+      localOpt.textContent = `Current Host (${window.location.host})`;
+      networkIpSelect.appendChild(localOpt);
+
+      // Default select current origin if on LAN IP, or first LAN IP
+      if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        localOpt.selected = true;
+      }
+
+      updatePairingUrl();
+    } catch (e) {
+      console.warn('Could not fetch /api/info, using current host', e);
+      if (networkIpSelect) {
+        const opt = document.createElement('option');
+        opt.value = window.location.origin;
+        opt.textContent = window.location.host;
+        networkIpSelect.appendChild(opt);
+        updatePairingUrl();
+      }
+    }
+  }
+
+  async function updatePairingUrl() {
+    if (!networkIpSelect || !pairingQrImg) return;
+    const hostBase = networkIpSelect.value || window.location.origin;
+    const cameraUrl = `${hostBase}/camera.html?room=${encodeURIComponent(activeRoomId)}`;
+    if (cameraUrlInput) cameraUrlInput.value = cameraUrl;
+    if (btnOpenTab) btnOpenTab.href = cameraUrl;
+
+    try {
+      const qrRes = await fetch(`/api/qr?text=${encodeURIComponent(cameraUrl)}`);
+      const qrData = await qrRes.json();
+      if (qrData.dataUrl && pairingQrImg) {
+        pairingQrImg.src = qrData.dataUrl;
+      }
+    } catch (err) {
+      console.error('Failed to load QR code image', err);
+    }
+  }
+
+  if (networkIpSelect) {
+    networkIpSelect.addEventListener('change', updatePairingUrl);
+  }
+
+  if (btnCopyLink && cameraUrlInput) {
+    btnCopyLink.addEventListener('click', () => {
+      navigator.clipboard.writeText(cameraUrlInput.value).then(() => {
+        btnCopyLink.textContent = 'Copied!';
+        setTimeout(() => {
+          btnCopyLink.innerHTML = `
+            <svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" d="M8 5H6a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2v-1M8 5a2 2 0 002 2h2a2 2 0 002-2M8 5a2 2 0 012-2h2a2 2 0 012 2m0 0h2a2 2 0 012 2v3m2 4H10m0 0l3-3m-3 3l3 3" />
+            </svg> Copy`;
+        }, 2000);
+      });
+    });
+  }
+
+  // -------------------------------------------------------------
+  // -------------------------------------------------------------
+  // CCTV Camera Login & Autonomous Discovery Handler
+  // -------------------------------------------------------------
+  const overlayCctvForm = document.getElementById('overlayCctvForm');
+  const overlayCctvUsername = document.getElementById('overlayCctvUsername');
+  const overlayCctvPassword = document.getElementById('overlayCctvPassword');
+  const overlayTogglePassBtn = document.getElementById('overlayTogglePassBtn');
+  const overlayBotStatusText = document.getElementById('overlayBotStatusText');
+  const overlayBotPulse = document.getElementById('overlayBotPulse');
+  const btnOverlayConnect = document.getElementById('btnOverlayConnect');
+  const overlayCameraResults = document.getElementById('overlayCameraResults');
+  const overlayResultsList = document.getElementById('overlayResultsList');
+  const overlayResultsBadge = document.getElementById('overlayResultsBadge');
+  const btnHeaderConnectCam = document.getElementById('btnHeaderConnectCam');
+  const cctvCameraBar = document.getElementById('cctvCameraBar');
+  const cctvCameraBarItems = document.getElementById('cctvCameraBarItems');
+  const overlayCctvIp = document.getElementById('overlayCctvIp');
+
+  let activeCameraDiscoverySse = null;
+  let currentVerifiedCameras = [];
+
+  // Pre-fill CCTV credentials strictly from local device storage / local CCTV DB
+  try {
+    let savedCreds = null;
+    const rawLocal = localStorage.getItem('ceova_cctv_local_credentials');
+    if (rawLocal) {
+      try { savedCreds = JSON.parse(rawLocal); } catch (_e) {}
+    }
+    if (savedCreds) {
+      if (overlayCctvUsername && !overlayCctvUsername.value && savedCreds.username) overlayCctvUsername.value = savedCreds.username;
+      if (overlayCctvPassword && !overlayCctvPassword.value && savedCreds.password) overlayCctvPassword.value = savedCreds.password;
+      if (overlayCctvIp && !overlayCctvIp.value && savedCreds.ip) {
+        overlayCctvIp.value = savedCreds.port && savedCreds.port !== 554 ? `${savedCreds.ip}:${savedCreds.port}` : savedCreds.ip;
+      }
+    } else {
+      fetch('/api/cctv/credentials').then(r => r.json()).then(data => {
+        if (data && data.credentials && data.credentials.username) {
+          const c = data.credentials;
+          if (overlayCctvUsername && !overlayCctvUsername.value && c.username) overlayCctvUsername.value = c.username;
+          if (overlayCctvPassword && !overlayCctvPassword.value && c.password) overlayCctvPassword.value = c.password;
+          if (overlayCctvIp && !overlayCctvIp.value && c.ip) {
+            overlayCctvIp.value = c.port && c.port !== 554 ? `${c.ip}:${c.port}` : c.ip;
+          }
+          localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(c));
+        }
+      }).catch(() => {});
+    }
+
+    // Auto-connect to existing verified camera on load so user doesn't have to reconnect every time
+    fetch('/api/cameras').then(r => r.json()).then(async data => {
+      const existing = (data && data.cameras) || [];
+      if (existing.length > 0) {
+        console.log('[Viewer] Found already connected camera in local DB. Auto-playing stream:', existing[0].name);
+        await switchCamera(existing[0]);
+        if (standbyOverlay) standbyOverlay.classList.add('hidden');
+      }
+    }).catch(() => {});
+  } catch (_e) {}
+
+  // Toggle Password Visibility in Modal
+  if (overlayTogglePassBtn && overlayCctvPassword) {
+    overlayTogglePassBtn.addEventListener('click', () => {
+      if (overlayCctvPassword.type === 'password') {
+        overlayCctvPassword.type = 'text';
+        overlayTogglePassBtn.textContent = '🔒';
+      } else {
+        overlayCctvPassword.type = 'password';
+        overlayTogglePassBtn.textContent = '👁️';
+      }
+    });
+  }
+
+  // Open modal from Header "CONNECT CCTV" button
+  if (btnHeaderConnectCam) {
+    btnHeaderConnectCam.addEventListener('click', () => {
+      if (standbyOverlay) standbyOverlay.classList.remove('hidden');
+    });
+  }
+
+  // Render Discovered Devices in the Modal based on real verification
+  function renderDiscoveryResults(cameras, discoveredHosts) {
+    if (!overlayCameraResults || !overlayResultsList) return;
+    overlayCameraResults.style.display = 'block';
+    overlayResultsList.innerHTML = '';
+
+    const verifiedList = Array.isArray(cameras) ? cameras : [];
+    const hostList = Array.isArray(discoveredHosts) ? discoveredHosts : [];
+
+    if (overlayResultsBadge) {
+      overlayResultsBadge.textContent = `${verifiedList.length} Verified`;
+      overlayResultsBadge.style.background = verifiedList.length > 0 ? 'rgba(74, 222, 128, 0.2)' : '#27272a';
+      overlayResultsBadge.style.color = verifiedList.length > 0 ? '#4ade80' : '#a1a1aa';
+    }
+
+    if (verifiedList.length === 0 && hostList.length === 0) {
+      const emptyDiv = document.createElement('div');
+      emptyDiv.style.cssText = 'font-size:0.8rem; color:#f87171; padding:8px; text-align:center;';
+      emptyDiv.textContent = 'No camera detected on the available network.';
+      overlayResultsList.appendChild(emptyDiv);
+      return;
+    }
+
+    // 1. Render successfully verified cameras
+    verifiedList.forEach((cam) => {
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#18181b; border:1px solid rgba(74,222,128,0.3); border-radius:6px; padding:7px 10px;';
+
+      const info = document.createElement('div');
+      info.style.cssText = 'display:flex; flex-direction:column; gap:2px;';
+      info.innerHTML = `
+        <div style="font-size:0.82rem; font-weight:700; color:#fff; display:flex; align-items:center; gap:6px;">
+          <span style="width:7px; height:7px; border-radius:50%; background:#4ade80;"></span>
+          ${cam.name || cam.brand || 'Camera'} (${cam.ip})
+        </div>
+        <div style="font-size:0.72rem; color:#4ade80; font-family:'JetBrains Mono',monospace;">Status: Connected</div>
+      `;
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'View Stream';
+      btn.style.cssText = 'padding:5px 12px; font-size:0.75rem; font-weight:700; background:#ffffff; color:#000000; border:none; border-radius:5px; cursor:pointer;';
+      btn.addEventListener('click', async () => {
+        await switchCamera(cam);
+        if (standbyOverlay) standbyOverlay.classList.add('hidden');
+      });
+
+      row.appendChild(info);
+      row.appendChild(btn);
+      overlayResultsList.appendChild(row);
+    });
+
+    // 2. Render candidate hosts that failed verification
+    hostList.forEach((h) => {
+      const isAlreadyVerified = verifiedList.some((v) => v.ip === h.ip);
+      if (isAlreadyVerified) return;
+
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#18181b; border:1px solid #27272a; border-radius:6px; padding:7px 10px; opacity:0.85;';
+
+      const statusColor = h.status === 'Authentication failed' ? '#f59e0b' : '#ef4444';
+      const statusText = h.status || 'Unreachable';
+
+      row.innerHTML = `
+        <div style="display:flex; flex-direction:column; gap:2px;">
+          <div style="font-size:0.8rem; font-weight:600; color:#e4e4e7; display:flex; align-items:center; gap:6px;">
+            <span style="width:6px; height:6px; border-radius:50%; background:${statusColor};"></span>
+            ${h.brand || 'Device'} (${h.ip}:${h.port || 554})
+          </div>
+          <div style="font-size:0.7rem; color:${statusColor}; font-family:'JetBrains Mono',monospace;">Status: ${statusText}</div>
+        </div>
+      `;
+      overlayResultsList.appendChild(row);
+    });
+  }
+
+  // Refresh Top Camera Switcher Bar
+  async function refreshCameraSwitcher() {
+    try {
+      const res = await fetch('/api/cameras');
+      const data = await res.json();
+      currentVerifiedCameras = (data && data.cameras) || [];
+
+      if (!cctvCameraBar || !cctvCameraBarItems) return;
+
+      if (currentVerifiedCameras.length === 0) {
+        cctvCameraBar.style.display = 'none';
+        cctvCameraBarItems.innerHTML = '';
+        return;
+      }
+
+      cctvCameraBar.style.display = 'flex';
+      cctvCameraBarItems.innerHTML = '';
+
+      currentVerifiedCameras.forEach((cam, idx) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn ghost';
+        btn.style.cssText = 'padding:4px 10px; font-size:0.74rem; font-family:"JetBrains Mono",monospace; background:rgba(0,0,0,0.7); border:1px solid rgba(255,255,255,0.18); border-radius:6px; cursor:pointer; color:#ffffff;';
+        btn.innerHTML = `● CAM 0${idx + 1}: ${cam.name || cam.ip}`;
+        btn.addEventListener('click', () => switchCamera(cam));
+        cctvCameraBarItems.appendChild(btn);
+      });
+    } catch (_err) {
+      console.warn('[Viewer] Could not refresh camera bar:', _err);
+    }
+  }
+
+  // Switch Active Displayed Camera
+  async function switchCamera(cam) {
+    if (!cam) return;
+    console.log('[Viewer] Switching to camera:', cam.name, cam.id);
+
+    const isHttp = cam.stream_url && (
+      cam.stream_url.startsWith('/api/proxy-stream') ||
+      cam.stream_url.startsWith('http://') ||
+      cam.stream_url.startsWith('https://')
+    );
+
+    if (isHttp) {
+      let cleanBase = cam.stream_url;
+      if (cleanBase.startsWith('/api/proxy-stream?url=')) {
+        cleanBase = decodeURIComponent(cleanBase.replace('/api/proxy-stream?url=', ''));
+      }
+      cleanBase = cleanBase.replace(/\/video$/, '').replace(/\/shot\.jpg$/, '').replace(/\/$/, '');
+
+      if (typeof window.startSmoothStream === 'function') {
+        window.startSmoothStream(cleanBase, cam.name);
+      } else {
+        displayRtspStream(cam.id, cam.name, `/api/proxy-stream?camId=${cam.id}`);
+      }
+    } else {
+      displayRtspStream(cam.id, cam.name, `/api/cameras/${cam.id}/stream.mjpg`);
+    }
+
+    if (osdCameraName) osdCameraName.textContent = cam.name || `CAM-${cam.id}`;
+    await refreshCameraSwitcher();
+  }
+
+  // CCTV Form Submit Handler
+  if (overlayCctvForm) {
+    overlayCctvForm.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const username = overlayCctvUsername?.value.trim() || '';
+      const password = overlayCctvPassword?.value || '';
+      const targetIp = document.getElementById('overlayCctvIp')?.value.trim() || null;
+
+      if (!username) {
+        if (overlayBotStatusText) overlayBotStatusText.textContent = 'Please enter a CCTV/NVR username.';
+        if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+        return;
+      }
+
+      if (btnOverlayConnect) {
+        btnOverlayConnect.disabled = true;
+        btnOverlayConnect.innerHTML = '<span class="pulse-dot"></span> Validating &amp; Discovering...';
+      }
+
+      if (overlayCameraResults) overlayCameraResults.style.display = 'none';
+
+      // 1. Direct Target Test Flow
+      if (targetIp) {
+        if (overlayBotPulse) overlayBotPulse.style.background = '#ffffff';
+        if (overlayBotStatusText) overlayBotStatusText.textContent = `Validating endpoint: ${targetIp}...`;
+
+        try {
+          const testRes = await fetch('/api/cameras/test-connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: targetIp, username, password })
+          });
+          const testData = await testRes.json();
+
+          if (testRes.ok && testData.success) {
+            if (overlayBotPulse) overlayBotPulse.style.background = '#4ade80';
+            if (overlayBotStatusText) overlayBotStatusText.textContent = `✓ ${testData.message}`;
+
+            // Save credentials strictly on local device and notify CEOVA Desktop
+            try {
+              const localCredObj = {
+                username,
+                password,
+                ip: targetIp.split(':')[0],
+                port: targetIp.includes(':') ? parseInt(targetIp.split(':')[1], 10) : 554,
+                cameraId: testData.camera?.id || `CAM_${targetIp.replace(/[:.]/g, '_')}`,
+                savedAt: new Date().toISOString()
+              };
+              localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(localCredObj));
+              fetch('/api/cctv/credentials', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(localCredObj)
+              }).catch(() => {});
+              if (window.parent && window.parent !== window) {
+                window.parent.postMessage({ type: 'CEOVA_CCTV_CONNECTED', payload: localCredObj }, '*');
+              }
+            } catch (_e) {}
+
+            renderDiscoveryResults([testData.camera], []);
+            await refreshCameraSwitcher();
+
+            setTimeout(async () => {
+              await switchCamera(testData.camera);
+              if (standbyOverlay) standbyOverlay.classList.add('hidden');
+              if (btnOverlayConnect) {
+                btnOverlayConnect.disabled = false;
+                btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
+              }
+            }, 600);
+            return;
+          } else {
+            const failStatus = testData.status || 'Connection error';
+            let errMsg = testData.error || 'Connection failed';
+            if (failStatus === 'Authentication failed') {
+              errMsg = '🔐 Wrong username/password — Camera detected but auth rejected. Check credentials.';
+            } else if (failStatus === 'Unreachable') {
+              const triedIp = targetIp.split(':')[0];
+              errMsg = `📡 ${triedIp} not reachable. Verify: NVR is powered on & connected to same network. Check NVR menu → Network Settings for the correct IP.`;
+            } else if (failStatus === 'Unsupported') {
+              errMsg = '⚠️ Device found but camera stream protocol not recognized. Try a different port (e.g. 554, 8000, 37777).';
+            }
+
+            if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+            if (overlayBotStatusText) overlayBotStatusText.textContent = `❌ ${errMsg}`;
+
+            renderDiscoveryResults([], [{
+              ip: targetIp.split(':')[0],
+              port: targetIp.includes(':') ? parseInt(targetIp.split(':')[1], 10) : 554,
+              brand: 'Device',
+              status: failStatus
+            }]);
+
+            if (btnOverlayConnect) {
+              btnOverlayConnect.disabled = false;
+              btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
+            }
+            return;
+          }
+        } catch (err) {
+          if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+          if (overlayBotStatusText) overlayBotStatusText.textContent = `Connection error: ${err.message}`;
+          if (btnOverlayConnect) {
+            btnOverlayConnect.disabled = false;
+            btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
+          }
+          return;
+        }
+      }
+
+      // 2. Autonomous Network Discovery Flow
+      if (overlayBotPulse) overlayBotPulse.style.background = '#ffffff';
+      if (overlayBotStatusText) overlayBotStatusText.textContent = 'Sweeping reachable network for CCTV/NVR devices...';
+
+      if (activeCameraDiscoverySse) {
+        activeCameraDiscoverySse.close();
+        activeCameraDiscoverySse = null;
+      }
+
+      try {
+        const res = await fetch('/api/cameras/discover', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password })
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Failed to start discovery');
+
+        activeCameraDiscoverySse = new EventSource('/api/cameras/discover/events');
+        activeCameraDiscoverySse.onmessage = async (evtMsg) => {
+          try {
+            const ev = JSON.parse(evtMsg.data);
+            if (ev.message && overlayBotStatusText) {
+              overlayBotStatusText.textContent = ev.message;
+            }
+
+            if (ev.type === 'CAMERA_MATCHED' && ev.camera) {
+              if (overlayBotPulse) overlayBotPulse.style.background = '#4ade80';
+              if (overlayBotStatusText) overlayBotStatusText.textContent = `✓ Verified camera: ${ev.camera.brand} (${ev.camera.ip})`;
+            } else if (ev.type === 'SCAN_COMPLETED') {
+              activeCameraDiscoverySse.close();
+              activeCameraDiscoverySse = null;
+
+              if (btnOverlayConnect) {
+                btnOverlayConnect.disabled = false;
+                btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
+              }
+
+              const matchedCams = ev.cameras || [];
+              const discHosts = ev.discoveredHosts || [];
+
+              // Save discovered camera & credentials strictly on local device and notify CEOVA Desktop
+              if (matchedCams.length > 0) {
+                const verifiedCam = matchedCams[0];
+                const cleanIp = verifiedCam.ip || (verifiedCam.name ? verifiedCam.name.match(/\(([^\:]+)/)?.[1] : '');
+                const cleanPort = verifiedCam.port || 554;
+                try {
+                  const localCredObj = {
+                    username,
+                    password,
+                    ip: cleanIp,
+                    port: cleanPort,
+                    cameraId: verifiedCam.id,
+                    streamUrl: verifiedCam.stream_url,
+                    savedAt: new Date().toISOString()
+                  };
+                  localStorage.setItem('ceova_cctv_local_credentials', JSON.stringify(localCredObj));
+                  fetch('/api/cctv/credentials', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(localCredObj)
+                  }).catch(() => {});
+                  if (window.parent && window.parent !== window) {
+                    window.parent.postMessage({ type: 'CEOVA_CCTV_CONNECTED', payload: localCredObj }, '*');
+                  }
+                } catch (_e) {}
+              }
+
+              renderDiscoveryResults(matchedCams, discHosts);
+              await refreshCameraSwitcher();
+
+              if (matchedCams.length === 0) {
+                if (discHosts.length > 0) {
+                  const hasAuthFail = discHosts.some((h) => h.status === 'Authentication failed');
+                  if (hasAuthFail) {
+                    overlayBotStatusText.textContent = 'Camera detected, but authentication failed.';
+                  } else {
+                    overlayBotStatusText.textContent = 'Device detected but the camera protocol is not supported.';
+                  }
+                  if (overlayBotPulse) overlayBotPulse.style.background = '#eab308';
+                } else {
+                  overlayBotStatusText.textContent = 'No camera detected on the available network.';
+                  if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+                }
+              } else if (matchedCams.length === 1) {
+                // Rule 4: 1 verified camera -> Show that camera directly
+                overlayBotStatusText.textContent = `✓ 1 verified camera connected: ${matchedCams[0].name || matchedCams[0].ip}`;
+                setTimeout(async () => {
+                  await switchCamera(matchedCams[0]);
+                  if (standbyOverlay) standbyOverlay.classList.add('hidden');
+                }, 700);
+              } else if (matchedCams.length === 2) {
+                // Rule 4: 2 verified cameras -> Show both cameras in switcher and connect first
+                overlayBotStatusText.textContent = `✓ 2 verified cameras detected.`;
+                setTimeout(async () => {
+                  await switchCamera(matchedCams[0]);
+                  if (standbyOverlay) standbyOverlay.classList.add('hidden');
+                }, 700);
+              } else {
+                // Rule 4: More than 2 -> Display all verified cameras in suitable grid/list
+                overlayBotStatusText.textContent = `✓ ${matchedCams.length} verified cameras detected.`;
+                setTimeout(async () => {
+                  await switchCamera(matchedCams[0]);
+                  if (standbyOverlay) standbyOverlay.classList.add('hidden');
+                }, 700);
+              }
+            } else if (ev.type === 'SCAN_FAILED') {
+              activeCameraDiscoverySse.close();
+              activeCameraDiscoverySse = null;
+              if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+              if (overlayBotStatusText) overlayBotStatusText.textContent = `Discovery error: ${ev.message || 'Scan failed'}`;
+              if (btnOverlayConnect) {
+                btnOverlayConnect.disabled = false;
+                btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Cameras';
+              }
+            }
+          } catch (_err) {}
+        };
+      } catch (err) {
+        if (overlayBotStatusText) overlayBotStatusText.textContent = `Error: ${err.message}`;
+        if (btnOverlayConnect) {
+          btnOverlayConnect.disabled = false;
+          btnOverlayConnect.innerHTML = '⚡ Connect &amp; Discover Camera';
+        }
+      }
+    });
+  }
+
+  // Clear Saved Cameras & Credentials Button Handler
+  async function clearSavedCctvSettings(e) {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const btn = document.getElementById('btnOverlayClearAll');
+    try {
+      if (btn) {
+        btn.disabled = true;
+        btn.innerHTML = 'Clearing...';
+      }
+
+      // 1. Wipe backend camera records and credentials across both endpoints
+      await Promise.allSettled([
+        fetch('/api/cameras', { method: 'DELETE' }),
+        fetch('/api/cctv/credentials', { method: 'DELETE' }),
+        fetch('/api/cctv/credentials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: 'clear' })
+        })
+      ]);
+
+      // 2. Wipe browser localStorage entirely
+      try {
+        localStorage.removeItem('ceova_cctv_local_credentials');
+        localStorage.removeItem('ceova_cctv_connected');
+        localStorage.removeItem('ceova_cctv_last_stream');
+        localStorage.removeItem('ceova_cctv_active_cam');
+      } catch (_lsErr) {}
+
+      // 3. Clear modal input fields immediately
+      if (overlayCctvUsername) overlayCctvUsername.value = '';
+      if (overlayCctvPassword) overlayCctvPassword.value = '';
+      if (overlayCctvIp) overlayCctvIp.value = '';
+
+      // 4. Reset discovered devices container & count
+      if (overlayResultsList) overlayResultsList.innerHTML = '';
+      if (overlayResultsBadge) {
+        overlayResultsBadge.textContent = '0 Verified';
+        overlayResultsBadge.style.background = '#27272a';
+        overlayResultsBadge.style.color = '#a1a1aa';
+      }
+      if (overlayCameraResults) overlayCameraResults.style.display = 'none';
+
+      // 5. Reset status message and pulse indicator
+      if (overlayBotStatusText) {
+        overlayBotStatusText.textContent = '✓ All saved credentials and camera settings cleared. Ready for new connection.';
+      }
+      if (overlayBotPulse) {
+        overlayBotPulse.style.background = '#4ade80';
+        overlayBotPulse.style.boxShadow = '0 0 8px rgba(74, 222, 128, 0.4)';
+      }
+
+      // 6. Stop stream players and reset indicators
+      currentVerifiedCameras = [];
+      if (cctvCameraBar) cctvCameraBar.style.display = 'none';
+      if (fallbackImgFeed) {
+        fallbackImgFeed.src = '';
+        fallbackImgFeed.style.display = 'none';
+      }
+      if (remoteVideo) {
+        remoteVideo.srcObject = null;
+        remoteVideo.style.display = 'none';
+      }
+      if (osdCameraName) osdCameraName.textContent = 'NO CAMERA CONNECTED';
+      if (systemStatusText) systemStatusText.textContent = 'STANDBY // DISCONNECTED';
+      if (osdStatus) {
+        osdStatus.textContent = 'DISCONNECTED';
+        osdStatus.style.color = 'var(--accent-red)';
+      }
+      await refreshCameraSwitcher();
+
+      // 7. Notify parent CEOVA window if running in iframe / Tauri
+      try {
+        if (window.parent && window.parent !== window) {
+          window.parent.postMessage({ type: 'CEOVA_CCTV_CLEARED' }, '*');
+          window.parent.postMessage({ type: 'CEOVA_CCTV_DISCONNECTED' }, '*');
+        }
+      } catch (_msgErr) {}
+
+      // 8. Positive UI confirmation on the button
+      if (btn) {
+        btn.innerHTML = '✓ Cleared';
+        btn.style.color = '#4ade80';
+        btn.style.borderColor = '#4ade80';
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.innerHTML = '🗑️ Clear Saved';
+          btn.style.color = '#ef4444';
+          btn.style.borderColor = '#3f3f46';
+        }, 1500);
+      }
+    } catch (err) {
+      if (overlayBotStatusText) overlayBotStatusText.textContent = `Clear failed: ${err.message}`;
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '🗑️ Clear Saved';
+      }
+    }
+  }
+
+  window.clearSavedCctvSettings = clearSavedCctvSettings;
+
+  const btnOverlayClearAll = document.getElementById('btnOverlayClearAll');
+  if (btnOverlayClearAll) {
+    btnOverlayClearAll.addEventListener('click', clearSavedCctvSettings);
+  }
+
+  // 3. WebSocket & WebRTC Signaling
+  let wsReconnectTimer = null;
+  function initWebSocket() {
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}`;
+    
+    ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      console.log('Connected to CCTV signaling server');
+      telemetryWs.textContent = 'CONNECTED';
+      telemetryWs.style.color = 'var(--accent-green)';
+
+      // Join room as viewer
+      ws.send(JSON.stringify({
+        type: 'join',
+        role: 'viewer',
+        roomId: activeRoomId
+      }));
+
+      if (wsReconnectTimer) {
+        clearTimeout(wsReconnectTimer);
+        wsReconnectTimer = null;
+      }
+      // Ping interval for latency
+      startPingInterval();
+    };
+
+    ws.onmessage = async (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        handleSignalingMessage(msg);
+      } catch (e) {
+        console.error('Error parsing WS message', e);
+      }
+    };
+
+    ws.onclose = () => {
+      console.warn('Signaling server closed. Reconnecting in 3s...');
+      telemetryWs.textContent = 'RECONNECTING';
+      telemetryWs.style.color = 'var(--accent-amber)';
+      if (!wsReconnectTimer) {
+        wsReconnectTimer = setTimeout(() => {
+          wsReconnectTimer = null;
+          initWebSocket();
+        }, 3000);
+      }
+    };
+
+    ws.onerror = (err) => {
+      console.error('WebSocket error:', err);
+    };
+  }
+
+  let pingStart = 0;
+  let pingIntervalTimer = null;
+  function startPingInterval() {
+    if (pingIntervalTimer) clearInterval(pingIntervalTimer);
+    pingIntervalTimer = setInterval(() => {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        pingStart = performance.now();
+        ws.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 4000);
+  }
+
+  const fallbackImgFeed = document.getElementById('fallbackImgFeed');
+  let iceCandidatesQueue = [];
+
+  // 4. WebRTC Peer Connection Management
+  function createPeerConnection() {
+    if (peerConnection) {
+      try { peerConnection.close(); } catch(e) {}
+    }
+    iceCandidatesQueue = [];
+
+    const peerConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' },
+        { urls: 'stun:stun2.l.google.com:19302' }
+      ]
+    };
+
+    peerConnection = new RTCPeerConnection(peerConfig);
+
+    // Track state
+    peerConnection.onconnectionstatechange = () => {
+      telemetryIce.textContent = peerConnection.connectionState.toUpperCase();
+      console.log('WebRTC Connection State:', peerConnection.connectionState);
+      if (peerConnection.connectionState === 'connected') {
+        onStreamConnected('WebRTC P2P');
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'webrtc-active', roomId: activeRoomId }));
+        }
+      } else if (peerConnection.connectionState === 'disconnected' || peerConnection.connectionState === 'failed') {
+        if (fallbackImgFeed && fallbackImgFeed.style.display === 'block') {
+          streamProtocolText.textContent = 'WebSocket Relay';
+        } else {
+          onStreamDisconnected();
+        }
+      }
+    };
+
+    peerConnection.onicecandidate = (event) => {
+      if (event.candidate && ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          type: 'candidate',
+          candidate: event.candidate,
+          roomId: activeRoomId
+        }));
+      }
+    };
+
+    // When remote media track arrives from phone!
+    peerConnection.ontrack = (event) => {
+      console.log('Received remote media stream track:', event.track.kind);
+      
+      // Safari / Chrome cross-browser track attachment
+      if (event.streams && event.streams[0]) {
+        remoteVideo.srcObject = event.streams[0];
+      } else {
+        if (!remoteVideo.srcObject) {
+          remoteVideo.srcObject = new MediaStream();
+        }
+        remoteVideo.srcObject.addTrack(event.track);
+      }
+
+      remoteVideo.muted = true;
+      remoteVideo.setAttribute('playsinline', '');
+      remoteVideo.setAttribute('autoplay', '');
+
+      remoteVideo.play().then(() => {
+        console.log('Remote video playing');
+        remoteVideo.style.display = 'block';
+        if (fallbackImgFeed) fallbackImgFeed.style.display = 'none';
+        onStreamConnected('WebRTC P2P');
+      }).catch(e => {
+        console.warn('Video play error (Safari autoplay):', e);
+        remoteVideo.style.display = 'block';
+        if (fallbackImgFeed) fallbackImgFeed.style.display = 'none';
+        onStreamConnected('WebRTC P2P');
+      });
+    };
+
+    return peerConnection;
+  }
+
+  function boostSdpBitrate(sdp, bitrateKbps = 5000) {
+    if (!sdp) return sdp;
+    return sdp.replace(/m=video (.*)\r\n/g, `m=video $1\r\nb=AS:${bitrateKbps}\r\nb=TIAS:${bitrateKbps * 1000}\r\n`);
+  }
+
+  async function handleSignalingMessage(msg) {
+    switch (msg.type) {
+      case 'pong': {
+        const pingTime = Math.round(performance.now() - pingStart);
+        pingMeter.textContent = `${pingTime} ms`;
+        break;
+      }
+
+      case 'status':
+      case 'peer-joined': {
+        if (msg.source === 'rtsp' && msg.streamUrl) {
+          console.log(`[RTSP] Received active camera stream: ${msg.cameraId}`);
+          displayRtspStream(msg.cameraId, 'CCTV Camera', msg.streamUrl);
+        } else if (msg.role === 'broadcaster' || msg.status === 'broadcaster-ready') {
+          console.log('Camera joined the room.');
+          // Don't recreate peer connection here; wait for broadcaster's offer
+        }
+        break;
+      }
+
+      case 'peer-left': {
+        if (msg.role === 'broadcaster') {
+          console.log('Phone camera disconnected.');
+          onStreamDisconnected();
+        }
+        break;
+      }
+
+      // Structured Identity Recognition Events from Server
+      case 'identity-event': {
+        if (typeof handleLiveIdentityEvent === 'function') {
+          handleLiveIdentityEvent(msg.event);
+        }
+        break;
+      }
+
+      case 'offer': {
+        console.log('Received WebRTC offer from phone camera');
+        const pc = createPeerConnection();
+        try {
+          await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          
+          // Flush queued candidates
+          while (iceCandidatesQueue.length > 0) {
+            const cand = iceCandidatesQueue.shift();
+            try {
+              await pc.addIceCandidate(new RTCIceCandidate(cand));
+            } catch(e) {
+              console.warn('Queued candidate error:', e);
+            }
+          }
+
+          const answer = await pc.createAnswer();
+          const boostedAnswerSdp = boostSdpBitrate(answer.sdp, 5000);
+          await pc.setLocalDescription(new RTCSessionDescription({ type: answer.type, sdp: boostedAnswerSdp }));
+
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({
+              type: 'answer',
+              sdp: pc.localDescription,
+              roomId: activeRoomId
+            }));
+            console.log('Sent WebRTC answer to phone camera (5 Mbps boosted)');
+          }
+        } catch (err) {
+          console.error('Error handling WebRTC offer:', err);
+        }
+        break;
+      }
+
+      case 'candidate': {
+        if (msg.candidate) {
+          if (peerConnection && peerConnection.remoteDescription) {
+            try {
+              await peerConnection.addIceCandidate(new RTCIceCandidate(msg.candidate));
+            } catch (e) {
+              console.error('Error adding ICE candidate', e);
+            }
+          } else {
+            iceCandidatesQueue.push(msg.candidate);
+          }
+        }
+        break;
+      }
+
+      // Hardware status report from phone (battery, torch state, camera orientation)
+      case 'camera-info': {
+        if (msg.battery !== undefined) {
+          osdBattery.textContent = `🔋 PHONE: ${msg.battery}%`;
+        }
+        if (msg.torch !== undefined) {
+          isTorchOn = msg.torch;
+          osdTorch.textContent = `🔦 FLASH: ${isTorchOn ? 'ON' : 'OFF'}`;
+          btnRemoteTorch.classList.toggle('btn-active', isTorchOn);
+        }
+        if (msg.facingMode !== undefined) {
+          isFrontCamera = msg.facingMode === 'user';
+          document.getElementById('osdCameraName').textContent = 
+            `CAM-01 [PHONE ${isFrontCamera ? 'FRONT' : 'REAR'} CAMERA]`;
+        }
+        if (msg.aspectRatio !== undefined || msg.orientation !== undefined) {
+          if (currentAspectMode === 'auto') {
+            const isPort = msg.orientation === 'portrait' || msg.aspectRatio === '9:16';
+            applyAspectMode(isPort ? '9:16' : '16:9', false);
+          }
+        }
+        if (msg.action === 'vibrate-ack') {
+          if (osdVibrate) {
+            osdVibrate.classList.remove('hidden');
+            osdVibrate.textContent = msg.hardwareVibrated ? '📳 PHONE VIBRATED!' : '📳 PHONE ALERTED!';
+            setTimeout(() => {
+              if (osdVibrate) osdVibrate.classList.add('hidden');
+            }, 3000);
+          }
+          addLogEvent('camera', 'PHONE VIBRATED', msg.hardwareVibrated ? 'Phone vibration motor activated' : 'Phone visual & audio alert triggered');
+        }
+        break;
+      }
+
+      // Fallback frame receiver (instant display over WebSockets)
+      case 'frame': {
+        if (msg.image) {
+          renderFallbackFrame(msg.image);
+        }
+        break;
+      }
+    }
+  }
+
+  // 5. Fallback Frame Renderer (over WebSockets)
+  let fallbackFrameCount = 0;
+  let lastFpsCalcTime = performance.now();
+
+  function renderFallbackFrame(dataUri) {
+    if (!fallbackImgFeed) return;
+    fallbackImgFeed.src = dataUri;
+
+    if (!remoteVideo.srcObject || remoteVideo.videoWidth === 0) {
+      fallbackImgFeed.style.display = 'block';
+      remoteVideo.style.display = 'none';
+      if (fallbackImgFeed.naturalWidth) {
+        resMeter.textContent = `${fallbackImgFeed.naturalWidth} x ${fallbackImgFeed.naturalHeight}`;
+      } else {
+        resMeter.textContent = '640 x 360';
+      }
+    }
+
+    fallbackFrameCount++;
+    const now = performance.now();
+    if (now - lastFpsCalcTime >= 1000) {
+      if (!remoteVideo.srcObject || remoteVideo.videoWidth === 0) {
+        fpsMeter.textContent = String(fallbackFrameCount);
+      }
+      fallbackFrameCount = 0;
+      lastFpsCalcTime = now;
+    }
+
+    onStreamConnected('WebSocket Relay');
+  }
+
+  // 6. Connected / Disconnected State Handler
+  let hasLoggedCameraConnect = false;
+  let disconnectDebounceTimer = null;
+  function onStreamConnected(protocolName) {
+    if (disconnectDebounceTimer) {
+      clearTimeout(disconnectDebounceTimer);
+      disconnectDebounceTimer = null;
+    }
+    if (!isConnected) {
+      isConnected = true;
+      standbyOverlay.classList.add('hidden');
+      systemPulse.className = 'pulse-dot online';
+      systemStatusText.textContent = 'ONLINE // LIVE FEED ACTIVE';
+      osdStatus.textContent = 'ONLINE';
+      osdStatus.style.color = 'var(--accent-green)';
+      if (!hasLoggedCameraConnect) {
+        hasLoggedCameraConnect = true;
+        addLogEvent('camera-connect', 'CCTV Camera Connected', 'Live video stream initialized');
+      }
+    }
+    streamProtocolText.textContent = protocolName;
+    startFpsMeter();
+  }
+
+  // Display Live RTSP Video Stream
+  function displayRtspStream(cameraId, cameraName = 'CCTV Camera', customStreamUrl = null) {
+    const streamUrl = customStreamUrl || `/api/cameras/${cameraId}/stream.mjpg`;
+    if (!fallbackImgFeed) return;
+
+    if (systemStatusText) systemStatusText.textContent = `CONNECTING: ${cameraName}...`;
+    if (systemPulse) systemPulse.className = 'pulse-dot active';
+
+    let firstFrameArrived = false;
+
+    fallbackImgFeed.onload = () => {
+      if (!firstFrameArrived) {
+        firstFrameArrived = true;
+        standbyOverlay.classList.add('hidden');
+        if (systemStatusText) systemStatusText.textContent = `LIVE: ${cameraName}`;
+        if (systemPulse) systemPulse.className = 'pulse-dot online';
+        if (streamProtocolText) streamProtocolText.textContent = 'RTSP MJPEG';
+        onStreamConnected('RTSP MJPEG');
+      }
+    };
+
+    fallbackImgFeed.onerror = () => {
+      console.warn(`[Viewer] Failed to load stream from ${streamUrl}`);
+      if (!firstFrameArrived) {
+        standbyOverlay.classList.remove('hidden');
+        if (overlayBotStatusText) {
+          overlayBotStatusText.textContent = `Stream connection failed for ${cameraName}. Check camera credentials & network.`;
+        }
+        if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
+        if (systemStatusText) systemStatusText.textContent = `OFFLINE // ${cameraName}`;
+        if (systemPulse) systemPulse.className = 'pulse-dot';
+      }
+    };
+
+    // Direct the fallback image to the live MJPEG stream
+    fallbackImgFeed.src = streamUrl;
+    fallbackImgFeed.style.display = 'block';
+    remoteVideo.style.display = 'none';
+  }
+
+  // Auto-connect to active camera in database on page load
+  async function checkActiveCameraOnLoad() {
+    try {
+      const res = await fetch('/api/cameras');
+      const data = await res.json();
+      if (data && data.cameras && data.cameras.length > 0) {
+        const cam = data.cameras[0];
+        console.log('[Viewer] Camera found:', cam.name, cam.stream_url);
+
+        const isHttpProxy = cam.stream_url && (
+          cam.stream_url.startsWith('/api/proxy-stream') ||
+          cam.stream_url.startsWith('http://') ||
+          cam.stream_url.startsWith('https://')
+        );
+
+        if (isHttpProxy) {
+          let cleanBase = cam.stream_url;
+          if (cleanBase.startsWith('/api/proxy-stream?url=')) {
+            cleanBase = decodeURIComponent(cleanBase.replace('/api/proxy-stream?url=', ''));
+          }
+          cleanBase = cleanBase.replace(/\/video$/, '').replace(/\/shot\.jpg$/, '').replace(/\/$/, '');
+
+          if (typeof window.startSmoothStream === 'function') {
+            window.startSmoothStream(cleanBase, cam.name);
+          } else if (fallbackImgFeed) {
+            fallbackImgFeed.onload = () => {
+              if (fallbackImgFeed.naturalWidth > 0) {
+                onStreamConnected('HTTP MJPEG');
+              }
+            };
+            fallbackImgFeed.onerror = () => {
+              onStreamDisconnected(cam.name);
+            };
+            fallbackImgFeed.src = cam.stream_url;
+            fallbackImgFeed.style.display = 'block';
+          }
+        } else {
+          displayRtspStream(cam.id, cam.name, '/api/cameras/' + cam.id + '/stream.mjpg');
+        }
+      } else {
+        if (standbyOverlay) standbyOverlay.classList.remove('hidden');
+      }
+    } catch (_e) {
+      console.warn('[Viewer] checkActiveCameraOnLoad error:', _e);
+      if (standbyOverlay) standbyOverlay.classList.remove('hidden');
+    }
+  }
+
+  function onStreamDisconnected(cameraName) {
+    if (disconnectDebounceTimer) clearTimeout(disconnectDebounceTimer);
+    disconnectDebounceTimer = setTimeout(() => {
+      isConnected = false;
+      hasLoggedCameraConnect = false;
+      standbyOverlay.classList.remove('hidden');
+      systemPulse.className = 'pulse-dot';
+      systemStatusText.textContent = `STANDBY // ${cameraName || 'CAMERA'}`;
+      osdStatus.textContent = 'DISCONNECTED';
+      osdStatus.style.color = 'var(--accent-red)';
+      fpsMeter.textContent = '0';
+      resMeter.textContent = '-- x --';
+      remoteVideo.srcObject = null;
+      remoteVideo.style.display = 'none';
+      if (fallbackImgFeed) fallbackImgFeed.style.display = 'none';
+      
+      if (mediaRecorder && mediaRecorder.state === 'recording') {
+        stopRecording();
+      }
+    }, 2000);
+  }
+
+  // 7. Live FPS and Resolution Meter
+  let fpsTimerRunning = false;
+  function startFpsMeter() {
+    if (fpsTimerRunning) return;
+    fpsTimerRunning = true;
+
+    let vFrameCount = 0;
+    let lastTime = performance.now();
+
+    function checkStats() {
+      if (!isConnected) {
+        fpsTimerRunning = false;
+        return;
+      }
+
+      if (remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none') {
+        resMeter.textContent = `${remoteVideo.videoWidth} x ${remoteVideo.videoHeight}`;
+      } else if (fallbackImgFeed && fallbackImgFeed.style.display !== 'none' && fallbackImgFeed.naturalWidth > 0) {
+        resMeter.textContent = `${fallbackImgFeed.naturalWidth} x ${fallbackImgFeed.naturalHeight}`;
+      }
+
+      if ('requestVideoFrameCallback' in remoteVideo && remoteVideo.style.display !== 'none') {
+        remoteVideo.requestVideoFrameCallback(() => {
+          vFrameCount++;
+        });
+      }
+
+      const now = performance.now();
+      if (now - lastTime >= 1000) {
+        if (remoteVideo.style.display !== 'none') {
+          const fps = Math.round((vFrameCount * 1000) / (now - lastTime));
+          fpsMeter.textContent = String(fps || 30);
+        } else if (fallbackImgFeed && fallbackImgFeed.style.display !== 'none') {
+          fpsMeter.textContent = fallbackImgFeed.naturalWidth > 0 ? '30' : '0';
+        }
+        vFrameCount = 0;
+        lastTime = now;
+      }
+
+      requestAnimationFrame(checkStats);
+    }
+    requestAnimationFrame(checkStats);
+  }
+
+  // 8. Remote Phone Controls (Viewer -> Phone)
+  btnRemoteTorch?.addEventListener('click', () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    isTorchOn = !isTorchOn;
+    ws.send(JSON.stringify({
+      type: 'command',
+      action: 'toggle-torch',
+      roomId: activeRoomId,
+      state: isTorchOn
+    }));
+    btnRemoteTorch?.classList.toggle('btn-active', isTorchOn);
+    osdTorch.textContent = `🔦 FLASH: ${isTorchOn ? 'ON' : 'OFF'}`;
+  });
+
+  btnRemoteFlip?.addEventListener('click', () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({
+      type: 'command',
+      action: 'switch-camera',
+      roomId: activeRoomId
+    }));
+  });
+
+  // Remote Vibrate Phone
+  if (btnRemoteVibrate) {
+    btnRemoteVibrate.addEventListener('click', () => {
+      if (!ws || ws.readyState !== WebSocket.OPEN) {
+        alert('Cannot vibrate phone: Camera connection is not active.');
+        return;
+      }
+
+      // Send vibrate command to connected phone
+      ws.send(JSON.stringify({
+        type: 'command',
+        action: 'vibrate',
+        roomId: activeRoomId,
+        pattern: [300, 150, 300, 150, 400]
+      }));
+
+      // Immediate visual feedback on viewer button and OSD
+      btnRemoteVibrate.classList.add('vibrating-btn');
+      if (vibrateBtnText) vibrateBtnText.textContent = 'Vibrating...';
+      if (osdVibrate) {
+        osdVibrate.classList.remove('hidden');
+        osdVibrate.textContent = '📳 VIBRATE: SENT';
+      }
+
+      setTimeout(() => {
+        btnRemoteVibrate.classList.remove('vibrating-btn');
+        if (vibrateBtnText) vibrateBtnText.textContent = 'Vibrate';
+      }, 1300);
+
+      setTimeout(() => {
+        if (osdVibrate && osdVibrate.textContent === '📳 VIBRATE: SENT') {
+          osdVibrate.classList.add('hidden');
+        }
+      }, 3000);
+    });
+  }
+
+
+  // 10. Instant Snapshot Capture
+  btnSnapshot?.addEventListener('click', () => {
+    captureSnapshot();
+  });
+
+  function captureSnapshot(isAutomaticAlert = false, customTitle = null, customDesc = null) {
+    const isVideoMode = remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none';
+    const sourceEl = isVideoMode ? remoteVideo : fallbackImgFeed;
+    const width = (isVideoMode ? remoteVideo.videoWidth : fallbackImgFeed.naturalWidth) || 1280;
+    const height = (isVideoMode ? remoteVideo.videoHeight : fallbackImgFeed.naturalHeight) || 720;
+    
+    const snapCanvas = document.createElement('canvas');
+    snapCanvas.width = width;
+    snapCanvas.height = height;
+    const ctx = snapCanvas.getContext('2d');
+
+    // Draw current video or image frame
+    try {
+      ctx.drawImage(sourceEl, 0, 0, width, height);
+    } catch(e) {
+      console.warn('Canvas drawImage error during snapshot:', e);
+    }
+
+    // Burn CCTV timestamp watermark
+    ctx.fillStyle = 'rgba(0,0,0,0.6)';
+    ctx.fillRect(16, height - 48, 460, 36);
+    ctx.fillStyle = '#00f0ff';
+    ctx.font = 'bold 16px monospace';
+    ctx.fillText(`CEOVA CCTV // ${osdTimestamp.textContent}`, 26, height - 24);
+
+    const dataUrl = snapCanvas.toDataURL('image/png');
+
+    // Auto download if manual click
+    if (!isAutomaticAlert) {
+      const a = document.createElement('a');
+      a.href = dataUrl;
+      a.download = `CCTV_SNAPSHOT_${Date.now()}.png`;
+      a.click();
+    }
+
+    const title = customTitle || (isAutomaticAlert ? '🚨 Automatic Alert Snapshot' : '📸 Manual Snapshot');
+    const desc = customDesc || `Saved ${width}x${height} HD Frame`;
+
+    addLogEvent(
+      isAutomaticAlert ? 'motion' : 'snapshot',
+      title,
+      desc,
+      dataUrl
+    );
+  }
+
+  // 11. Video Recording (MediaRecorder API)
+  btnRecord?.addEventListener('click', () => {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      stopRecording();
+    } else {
+      startRecording();
+    }
+  });
+
+  function startRecording() {
+    let streamToRecord = remoteVideo.srcObject;
+    if (!streamToRecord && remoteVideo.captureStream) {
+      streamToRecord = remoteVideo.captureStream();
+    }
+    if (!streamToRecord && motionCanvas.captureStream) {
+      streamToRecord = motionCanvas.captureStream(20);
+    }
+
+    if (!streamToRecord) {
+      alert('Cannot start recording: No active camera stream found.');
+      return;
+    }
+
+    recordedChunks = [];
+    let options = { mimeType: 'video/webm;codecs=vp8,opus' };
+    if (!MediaRecorder.isTypeSupported(options.mimeType)) {
+      options = { mimeType: 'video/webm' };
+    }
+
+    try {
+      mediaRecorder = new MediaRecorder(streamToRecord, options);
+    } catch (e) {
+      console.warn('Fallback media recorder setup', e);
+      mediaRecorder = new MediaRecorder(streamToRecord);
+    }
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size > 0) {
+        recordedChunks.push(event.data);
+      }
+    };
+
+    mediaRecorder.onstop = () => {
+      const blob = new Blob(recordedChunks, { type: 'video/webm' });
+      const videoUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = videoUrl;
+      a.download = `CCTV_RECORDING_${Date.now()}.webm`;
+      a.click();
+
+      addLogEvent('recording', '🔴 Video Recording Saved', `Duration: ${recTimer.textContent}`, null, videoUrl);
+    };
+
+    mediaRecorder.start(1000); // 1-second chunks
+    recordingStartTime = Date.now();
+
+    // UI Updates
+    btnRecord.classList.add('btn-danger');
+    recordBtnText.textContent = 'Stop Rec';
+    recBadge.classList.remove('hidden');
+    systemPulse.className = 'pulse-dot recording';
+
+    recordingTimerInterval = setInterval(() => {
+      const elapsedSec = Math.floor((Date.now() - recordingStartTime) / 1000);
+      const m = String(Math.floor(elapsedSec / 60)).padStart(2, '0');
+      const s = String(elapsedSec % 60).padStart(2, '0');
+      recTimer.textContent = `${m}:${s}`;
+    }, 1000);
+  }
+
+  function stopRecording() {
+    if (mediaRecorder && mediaRecorder.state === 'recording') {
+      mediaRecorder.stop();
+    }
+    clearInterval(recordingTimerInterval);
+    btnRecord.classList.remove('btn-danger');
+    recordBtnText.textContent = 'Record';
+    recBadge.classList.add('hidden');
+    recTimer.textContent = '00:00';
+    systemPulse.className = 'pulse-dot online';
+  }
+
+
+  // 13. In-Stream QR / Barcode Recognition
+  btnQrScanToggle?.addEventListener('click', async () => {
+    qrScannerActive = !qrScannerActive;
+    btnQrScanToggle?.classList.toggle('btn-active', qrScannerActive);
+
+    if (qrScannerActive) {
+      startInStreamQrScanner();
+    } else {
+      stopInStreamQrScanner();
+    }
+  });
+
+  async function startInStreamQrScanner() {
+    if ('BarcodeDetector' in window) {
+      try {
+        barcodeDetector = new BarcodeDetector({ formats: ['qr_code', 'ean_13', 'code_128'] });
+      } catch (e) {
+        console.warn('BarcodeDetector format init fallback:', e);
+      }
+    }
+
+    qrScanInterval = setInterval(async () => {
+      if (!isConnected || !barcodeDetector) return;
+      const isVideoMode = remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none';
+      const sourceEl = isVideoMode ? remoteVideo : fallbackImgFeed;
+      if (isVideoMode && remoteVideo.readyState < 2) return;
+      if (!isVideoMode && !fallbackImgFeed.complete) return;
+
+      try {
+        const barcodes = await barcodeDetector.detect(sourceEl);
+        if (barcodes && barcodes.length > 0) {
+          const firstCode = barcodes[0];
+          showQrScanResult(firstCode.rawValue);
+        }
+      } catch (e) {
+        // Ignored frame error
+      }
+    }, 500);
+  }
+
+  function stopInStreamQrScanner() {
+    clearInterval(qrScanInterval);
+    qrResultCard.classList.remove('visible');
+  }
+
+  function showQrScanResult(text) {
+    qrResultContent.textContent = text;
+    qrResultCard.classList.add('visible');
+
+    btnOpenQrUrl.onclick = () => {
+      if (text.startsWith('http://') || text.startsWith('https://')) {
+        window.open(text, '_blank');
+      } else {
+        navigator.clipboard.writeText(text);
+        alert(`Copied to clipboard: ${text}`);
+      }
+    };
+  }
+
+  btnCloseQrResult.addEventListener('click', () => {
+    qrResultCard.classList.remove('visible');
+  });
+
+  // =========================================================
+  // 13b. ADVANCED AI HUMAN BOT: DISTANT SCAN, UNIQUE IDs, DWELL TIMER & MOTION STATE
+  // =========================================================
+
+  // Dedicated offscreen buffer for full frame AI scans
+  const aiBufferCanvas = document.createElement('canvas');
+  const aiBufferCtx = aiBufferCanvas.getContext('2d', { willReadFrequently: true });
+
+  // Format dwell duration into MM:SS or HH:MM:SS
+  function formatDwellTime(elapsedMs) {
+    const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
+    const hrs = Math.floor(totalSec / 3600);
+    const mins = Math.floor((totalSec % 3600) / 60);
+    const secs = totalSec % 60;
+    if (hrs > 0) {
+      return `${hrs}:${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+    }
+    return `${String(mins).padStart(2, '0')}:${String(secs).padStart(2, '0')}`;
+  }
+
+  // Robust illumination-invariant normalized chromaticity & RGB color similarity
+  function getColorSimilarity(c1, c2) {
+    if (!c1 || !c2) return 0.50;
+    const sum1 = (c1[0] + c1[1] + c1[2]) || 1;
+    const sum2 = (c2[0] + c2[1] + c2[2]) || 1;
+
+    // 1. Normalized chromaticity (r, g, b ratios — robust against lighting and shadow changes)
+    const r1 = c1[0] / sum1, g1 = c1[1] / sum1, b1 = c1[2] / sum1;
+    const r2 = c2[0] / sum2, g2 = c2[1] / sum2, b2 = c2[2] / sum2;
+    const chromDist = Math.hypot(r1 - r2, g1 - g2, b1 - b2);
+    const chromSim = Math.max(0, 1.0 - (chromDist * 3.2));
+
+    // 2. Brightness-aware distance
+    const rgbDist = Math.hypot(c1[0] - c2[0], c1[1] - c2[1], c1[2] - c2[2]);
+    const rgbSim = Math.max(0, 1.0 - (rgbDist / 200));
+
+    return (chromSim * 0.70) + (rgbSim * 0.30);
+  }
+
+  // Advanced Multi-Human Sticky Tracker with Spatial Seat Anchors, Multi-Frame Confirmation & 60s Memory System
+  class AdvancedHumanTracker {
+    constructor(options = {}) {
+      this.tracks = []; // Array of active tracks
+      this.nextId = (options && options.startId) || 1;
+      this.totalUniqueCount = 0;
+      this.confirmThreshold = 3; // Must be observed across 3 detection cycles (~250-300ms) to confirm personhood
+
+      // Disappearance grace periods:
+      // Seated / interior humans stay tracked for up to 15,000ms (15 seconds) during occlusions, head turns, or shifts
+      this.interiorGraceMs = 15000;
+      this.exitGraceMs = 1200;
+
+      // 60-Second Re-Entry & Seat Memory Window:
+      // Remembers departed humans for 60 seconds (60,000ms).
+      // Returning to their seat or room reclaims their exact ID with zero count inflation.
+      this.reentryMemoryMs = 60000;
+      this.dormantTracks = [];
+    }
+
+    update(detectedHumans, now = performance.now(), wallClockNow = Date.now(), frameW = 1280, frameH = 720) {
+      // Prune dormant tracks older than reentryMemoryMs
+      this.dormantTracks = this.dormantTracks.filter(d => (wallClockNow - (d.departedWallClock || 0)) <= this.reentryMemoryMs);
+
+      function getIoU(b1, b2) {
+        const x1 = Math.max(b1.x, b2.x);
+        const y1 = Math.max(b1.y, b2.y);
+        const x2 = Math.min(b1.x + b1.w, b2.x + b2.w);
+        const y2 = Math.min(b1.y + b1.h, b2.y + b2.h);
+        const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+        const union = (b1.w * b1.h) + (b2.w * b2.h) - inter;
+        return union > 0 ? inter / union : 0;
+      }
+
+      function getInterArea(b1, b2) {
+        const x1 = Math.max(b1.x, b2.x);
+        const y1 = Math.max(b1.y, b2.y);
+        const x2 = Math.min(b1.x + b1.w, b2.x + b2.w);
+        const y2 = Math.min(b1.y + b1.h, b2.y + b2.h);
+        return Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+      }
+
+      // 1. Build pairwise match candidates with adaptive affinity metric
+      const candidates = [];
+      for (let tIdx = 0; tIdx < this.tracks.length; tIdx++) {
+        const tr = this.tracks[tIdx];
+        const trCx = tr.x + tr.width / 2;
+        const trCy = tr.y + tr.height / 2;
+        const trRefDim = Math.max(tr.width, tr.height, 60);
+
+        for (let dIdx = 0; dIdx < detectedHumans.length; dIdx++) {
+          const det = detectedHumans[dIdx];
+          const [dx, dy, dw, dh] = det.bbox;
+          const detCx = dx + dw / 2;
+          const detCy = dy + dh / 2;
+
+          const dist = Math.hypot(trCx - detCx, trCy - detCy);
+          const normDist = dist / trRefDim;
+          const iou = getIoU(
+            { x: tr.x, y: tr.y, w: tr.width, h: tr.height },
+            { x: dx, y: dy, w: dw, h: dh }
+          );
+
+          const trArea = tr.width * tr.height;
+          const detArea = dw * dh;
+          const areaSim = Math.min(trArea, detArea) / Math.max(trArea, detArea);
+
+          let affinity = 0;
+          if (iou > 0.05) {
+            // Strong IoU overlap → high confidence same person
+            affinity = (iou * 2.2) + Math.max(0, 1.0 - normDist) * 0.8 + (areaSim * 0.3);
+          } else if (normDist < 1.6) {
+            // Proximity-only match
+            affinity = Math.max(0, 1.0 - (normDist / 1.6)) * 0.85 + (areaSim * 0.25);
+          }
+
+          // Spatial Seat Anchor Bonus:
+          // If the person has established a stationary seat position, lock affinity to their chair!
+          if (tr.anchorX !== undefined && tr.anchorY !== undefined) {
+            const distToAnchor = Math.hypot(detCx - tr.anchorX, detCy - tr.anchorY);
+            const anchorRange = Math.max(tr.anchorH || 100, 80) * 0.75;
+            if (distToAnchor < anchorRange) {
+              affinity += Math.max(0, 1.0 - (distToAnchor / anchorRange)) * 0.45;
+            }
+          }
+
+          // Single human lock
+          if (this.tracks.length === 1 && detectedHumans.length === 1 && normDist < 2.0) {
+            affinity += 0.35;
+          }
+
+          // Established track lock bonus: lock on firmly to existing confirmed humans
+          if ((tr.confirmHits || 0) >= 2 || tr.confirmed) {
+            affinity += 0.20;
+          }
+
+          // Color consistency & dissimilarity gating
+          if (det.colorSignature && tr.colorSignature) {
+            const cd = Math.hypot(
+              det.colorSignature[0] - tr.colorSignature[0],
+              det.colorSignature[1] - tr.colorSignature[1],
+              det.colorSignature[2] - tr.colorSignature[2]
+            );
+            // If clothing is significantly different (e.g. contrasting shirts of back-to-back people):
+            // Hard prevent swapping unless IoU is very high (>0.50)
+            if (cd > 85 && iou < 0.25) {
+              continue; // Reject candidate match to avoid ID hijacking between neighbors
+            } else if (cd > 65) {
+              affinity -= 0.30; // Strong penalty for color mismatch
+            } else {
+              const colorSim = Math.max(0, 1.0 - (cd / 100));
+              affinity += colorSim * 0.25;
+            }
+          }
+
+          if (affinity > 0.25) {
+            candidates.push({ tIdx, dIdx, affinity });
+          }
+        }
+      }
+
+      // Sort candidate pairs by highest affinity first (Global optimal match assignment)
+      candidates.sort((a, b) => b.affinity - a.affinity);
+
+      const matchedTrackIndices = new Set();
+      const matchedDetIndices = new Set();
+
+      for (const cand of candidates) {
+        if (!matchedTrackIndices.has(cand.tIdx) && !matchedDetIndices.has(cand.dIdx)) {
+          matchedTrackIndices.add(cand.tIdx);
+          matchedDetIndices.add(cand.dIdx);
+
+          const t = this.tracks[cand.tIdx];
+          const det = detectedHumans[cand.dIdx];
+          const [hx, hy, hw, hh] = det.bbox;
+
+          const dt = Math.max(0.02, (now - t.lastUpdateTime) / 1000);
+          const currentCx = hx + hw / 2;
+          const currentCy = hy + hh / 2;
+          const prevCx = t.x + t.width / 2;
+          const prevCy = t.y + t.height / 2;
+
+          // Estimate motion velocity with clamping to avoid unnatural spikes
+          const maxSpeed = 320;
+          const instantVx = Math.min(maxSpeed, Math.max(-maxSpeed, (currentCx - prevCx) / dt));
+          const instantVy = Math.min(maxSpeed, Math.max(-maxSpeed, (currentCy - prevCy) / dt));
+          t.vx = t.vx * 0.70 + instantVx * 0.30;
+          t.vy = t.vy * 0.70 + instantVy * 0.30;
+
+          const speed = Math.hypot(t.vx, t.vy);
+          if (speed > 25) {
+            t.motionState = 'WALKING';
+            t.direction = Math.abs(t.vx) > Math.abs(t.vy) ? (t.vx > 0 ? '→' : '←') : (t.vy > 0 ? '↓' : '↑');
+            t.steadyFrames = 0;
+            // If walking far away from anchor, release seat anchor
+            if (t.anchorX !== undefined && Math.hypot(currentCx - t.anchorX, currentCy - t.anchorY) > 120) {
+              t.isSeated = false;
+            }
+          } else {
+            t.motionState = 'STEADY';
+            t.direction = '';
+            t.steadyFrames = (t.steadyFrames || 0) + 1;
+            // Establish or refine stationary seat anchor
+            if (t.steadyFrames >= 3) {
+              t.isSeated = true;
+              if (t.anchorX === undefined) {
+                t.anchorX = currentCx;
+                t.anchorY = currentCy;
+                t.anchorW = hw;
+                t.anchorH = hh;
+              } else {
+                t.anchorX = t.anchorX * 0.88 + currentCx * 0.12;
+                t.anchorY = t.anchorY * 0.88 + currentCy * 0.12;
+                t.anchorW = t.anchorW * 0.88 + hw * 0.12;
+                t.anchorH = t.anchorH * 0.88 + hh * 0.12;
+              }
+            }
+          }
+
+          // Position smoothing: gentle on seated people to prevent box jumping on fidgeting
+          const moveDist = Math.hypot(hx - t.x, hy - t.y);
+          const posAlpha = t.isSeated ? 0.72 : (moveDist > 16 ? 0.95 : (moveDist > 6 ? 0.88 : 0.65));
+          const sizeAlpha = 0.72;
+          t.x = t.x * (1 - posAlpha) + hx * posAlpha;
+          t.y = t.y * (1 - posAlpha) + hy * posAlpha;
+          t.width = t.width * (1 - sizeAlpha) + hw * sizeAlpha;
+          t.height = t.height * (1 - sizeAlpha) + hh * sizeAlpha;
+
+          t.score = Math.max(t.score * 0.7, det.score);
+          t.lastSeenTime = now;
+          t.lastSeenWallClock = wallClockNow;
+          t.lastUpdateTime = now;
+          t.misses = 0;
+          t.totalDetections = (t.totalDetections || 0) + 1;
+          t.confirmHits = (t.confirmHits || 0) + 1;
+
+          // Multi-frame track confirmation: only increment totalUniqueCount once verified!
+          if (!t.confirmed && t.confirmHits >= this.confirmThreshold) {
+            t.confirmed = true;
+            this.totalUniqueCount++;
+            console.log(`[HumanTracker] ✅ Human #${t.id} verified (Unique Total: ${this.totalUniqueCount})`);
+            addLogEvent('human', `✅ Human #${t.id} verified`, `Stable multi-frame lock • Unique Count: ${this.totalUniqueCount}`);
+          }
+
+          // Continuous appearance refinement: accumulate multi-zone color & Re-ID prototypes
+          if (det.colorSignature) t.colorSignature = det.colorSignature;
+          if (det.colorProfile) {
+            t.colorProfile = det.colorProfile;
+            if (det.colorProfile.torso) t.colorSignature = det.colorProfile.torso;
+            if (det.colorProfile.lower) t.lowerColor = det.colorProfile.lower;
+            if (det.colorProfile.upper) t.upperColor = det.colorProfile.upper;
+          }
+          if (det.reidFeatures) {
+            t.reidFeatures = det.reidFeatures;
+            if (!t.embeddingBank) t.embeddingBank = [];
+            if (t.embeddingBank.length < 8) {
+              t.embeddingBank.push(det.reidFeatures);
+            } else if (det.score > 0.60) {
+              t.embeddingBank.shift();
+              t.embeddingBank.push(det.reidFeatures);
+            }
+          }
+          if (t.colorSignature) {
+            if (!t.colorBank) t.colorBank = [];
+            if (t.colorBank.length < 8) {
+              t.colorBank.push(t.colorSignature);
+            } else {
+              t.colorBank.shift();
+              t.colorBank.push(t.colorSignature);
+            }
+          }
+        }
+      }
+
+      // 2. Unmatched detections -> First check 60-Second Re-Entry Memory for returning human!
+      for (let dIdx = 0; dIdx < detectedHumans.length; dIdx++) {
+        if (!matchedDetIndices.has(dIdx)) {
+          const det = detectedHumans[dIdx];
+          const [hx, hy, hw, hh] = det.bbox;
+
+          const detArea = hw * hh;
+          const detCx = hx + hw / 2;
+          const detCy = hy + hh / 2;
+
+          // Reject if this detection has high spatial overlap with ANY active track (duplicate box on same human)
+          // CRITICAL: NEVER reject based solely on center distance, as people sitting back-to-back have close centers!
+          let overlapsActiveTrack = false;
+          for (const tr of this.tracks) {
+            const trIoU = getIoU(
+              { x: tr.x, y: tr.y, w: tr.width, h: tr.height },
+              { x: hx, y: hy, w: hw, h: hh }
+            );
+            const trInter = getInterArea(
+              { x: tr.x, y: tr.y, w: tr.width, h: tr.height },
+              { x: hx, y: hy, w: hw, h: hh }
+            );
+            const minArea = Math.min(tr.width * tr.height, detArea);
+            const ioMin = minArea > 0 ? trInter / minArea : 0;
+
+            if (trIoU > 0.48 || (ioMin > 0.75 && trIoU > 0.20)) {
+              overlapsActiveTrack = true;
+              break;
+            }
+          }
+
+          if (overlapsActiveTrack) {
+            continue;
+          }
+
+          let bestDormantIdx = -1;
+          let bestDormantScore = 0;
+
+          // ── Search 60-Second Memory for returning human ───────────────────
+          for (let k = 0; k < this.dormantTracks.length; k++) {
+            const d = this.dormantTracks[k];
+            const timeAwaySec = (wallClockNow - (d.departedWallClock || 0)) / 1000;
+            if (timeAwaySec > (this.reentryMemoryMs / 1000) + 2.0) continue;
+
+            let score = 0;
+            let weights = 0;
+
+            // 1. 128-Dim Deep Re-ID Appearance Cosine Similarity across all stored prototype embeddings
+            const dEmbeddings = (d.embeddingBank && d.embeddingBank.length > 0)
+              ? d.embeddingBank
+              : (d.reidFeatures ? [d.reidFeatures] : []);
+
+            if (det.reidFeatures && dEmbeddings.length > 0) {
+              let maxEmbSim = 0;
+              for (const emb of dEmbeddings) {
+                if (emb && emb.length === det.reidFeatures.length) {
+                  let dot = 0;
+                  for (let n = 0; n < det.reidFeatures.length; n++) {
+                    dot += det.reidFeatures[n] * emb[n];
+                  }
+                  maxEmbSim = Math.max(maxEmbSim, Math.max(0, Math.min(1.0, dot)));
+                }
+              }
+              score += maxEmbSim * 0.45;
+              weights += 0.45;
+            }
+
+            // 2. Torso / Shirt Color Similarity (Illumination-Invariant Chromaticity)
+            const detTorso = det.colorSignature || (det.colorProfile && det.colorProfile.torso);
+            const dTorsoSamples = (d.colorBank && d.colorBank.length > 0)
+              ? d.colorBank
+              : (d.colorSignature ? [d.colorSignature] : (d.colorProfile?.torso ? [d.colorProfile.torso] : []));
+
+            if (detTorso && dTorsoSamples.length > 0) {
+              let maxTorsoSim = 0;
+              for (const col of dTorsoSamples) {
+                maxTorsoSim = Math.max(maxTorsoSim, getColorSimilarity(detTorso, col));
+              }
+              score += maxTorsoSim * 0.35;
+              weights += 0.35;
+            }
+
+            // 3. Lower Body / Pants Color Similarity
+            const detLower = det.lowerColor || (det.colorProfile && det.colorProfile.lower);
+            const dLower = d.lowerColor || (d.colorProfile && d.colorProfile.lower);
+            if (detLower && dLower) {
+              const lowerSim = getColorSimilarity(detLower, dLower);
+              score += lowerSim * 0.20;
+              weights += 0.20;
+            }
+
+            // 4. Upper Body / Hair / Collar Similarity
+            const detUpper = det.upperColor || (det.colorProfile && det.colorProfile.upper);
+            const dUpper = d.upperColor || (d.colorProfile && d.colorProfile.upper);
+            if (detUpper && dUpper) {
+              const upperSim = getColorSimilarity(detUpper, dUpper);
+              score += upperSim * 0.15;
+              weights += 0.15;
+            }
+
+            // 5. Spatial Seat Anchor Proximity: Reclaim seat ID if returning to the same seat!
+            if (d.anchorX !== undefined && d.anchorY !== undefined) {
+              const distToAnchor = Math.hypot(detCx - d.anchorX, detCy - d.anchorY);
+              const anchorRef = Math.max(d.anchorH || 100, 80);
+              if (distToAnchor < anchorRef * 0.85) {
+                const seatScore = Math.max(0, 1.0 - (distToAnchor / (anchorRef * 0.85)));
+                score += seatScore * 0.45;
+                weights += 0.45;
+              }
+            }
+
+            // 6. Recency Affinity Factor
+            const recencyFactor = Math.max(0, 1.0 - (timeAwaySec / (this.reentryMemoryMs / 1000))) * 0.15;
+            score += recencyFactor;
+            weights += 0.10;
+
+            const finalSim = weights > 0 ? (score / weights) : 0.50;
+
+            // Match threshold:
+            const matchThreshold = this.dormantTracks.length === 1 ? 0.20 : 0.26;
+            if (finalSim > bestDormantScore && finalSim >= matchThreshold) {
+              bestDormantScore = finalSim;
+              bestDormantIdx = k;
+            }
+          }
+
+          if (bestDormantIdx >= 0) {
+            // Re-activate same human number within 60 seconds!
+            const d = this.dormantTracks.splice(bestDormantIdx, 1)[0];
+            const timeAwaySec = Math.round((wallClockNow - (d.departedWallClock || wallClockNow)) / 1000);
+
+            const resurrected = {
+              ...d,
+              id: d.id, // EXACT SAME HUMAN NUMBER!
+              confirmed: true,
+              confirmHits: Math.max(3, (d.confirmHits || 3)),
+              x: hx,
+              y: hy,
+              width: hw,
+              height: hh,
+              score: det.score,
+              vx: 0,
+              vy: 0,
+              motionState: 'STEADY',
+              direction: '',
+              misses: 0,
+              lastSeenTime: now,
+              lastSeenWallClock: wallClockNow,
+              lastUpdateTime: now,
+              totalDetections: (d.totalDetections || 1) + 1,
+              reentered: true,
+              reenteredTime: wallClockNow,
+              visitCount: (d.visitCount || 1) + 1,
+              accumulatedDwellMs: (d.accumulatedDwellMs || 0) + (d.dwellMs || 0),
+              firstSeenWallClock: wallClockNow - (d.accumulatedDwellMs || 0),
+              entityClass: 'person',
+              anchorX: d.anchorX !== undefined ? d.anchorX : detCx,
+              anchorY: d.anchorY !== undefined ? d.anchorY : detCy,
+              anchorW: d.anchorW || hw,
+              anchorH: d.anchorH || hh,
+              isSeated: d.isSeated || false,
+              steadyFrames: 3,
+              embeddingBank: d.embeddingBank || (d.reidFeatures ? [d.reidFeatures] : []),
+              colorBank: d.colorBank || (d.colorSignature ? [d.colorSignature] : [])
+            };
+
+            if (det.colorSignature) resurrected.colorSignature = det.colorSignature;
+            if (det.colorProfile) resurrected.colorProfile = det.colorProfile;
+            if (det.reidFeatures) resurrected.reidFeatures = det.reidFeatures;
+            if (det.lowerColor) resurrected.lowerColor = det.lowerColor;
+
+            this.tracks.push(resurrected);
+            matchedDetIndices.add(dIdx);
+
+            console.log(`[MemorySystem] 🔄 Human #${d.id} returned after ${timeAwaySec}s -> RECLAIMED SAME ID #${d.id} (Match: ${Math.round(bestDormantScore * 100)}%)`);
+            addLogEvent('human', `🔄 Human #${d.id} returned (${timeAwaySec}s away)`, `Re-identified within 60s window • Retained ID #${d.id} (Visit #${resurrected.visitCount}, Match: ${Math.round(bestDormantScore * 100)}%)`);
+            continue;
+          }
+
+          // Not in 60-second memory: assign tentative Human ID (counter only increments after multi-frame confirmation)
+          const newId = this.nextId++;
+
+          const newTrack = {
+            id: newId,
+            confirmed: false,
+            confirmHits: 1,
+            x: hx,
+            y: hy,
+            width: hw,
+            height: hh,
+            vx: 0,
+            vy: 0,
+            motionState: 'STEADY',
+            direction: '',
+            score: det.score,
+            firstSeenWallClock: wallClockNow,
+            lastSeenTime: now,
+            lastSeenWallClock: wallClockNow,
+            lastUpdateTime: now,
+            misses: 0,
+            totalDetections: 1,
+            steadyFrames: 1,
+            isSeated: false,
+            anchorX: detCx,
+            anchorY: detCy,
+            anchorW: hw,
+            anchorH: hh,
+            colorSignature: det.colorSignature || (det.colorProfile && det.colorProfile.torso) || null,
+            colorProfile: det.colorProfile || null,
+            lowerColor: det.lowerColor || (det.colorProfile && det.colorProfile.lower) || null,
+            upperColor: det.upperColor || (det.colorProfile && det.colorProfile.upper) || null,
+            reidFeatures: det.reidFeatures || null,
+            embeddingBank: det.reidFeatures ? [det.reidFeatures] : [],
+            colorBank: det.colorSignature ? [det.colorSignature] : [],
+            accumulatedDwellMs: 0,
+            visitCount: 1,
+            reentered: false,
+            entityClass: 'person'
+          };
+          this.tracks.push(newTrack);
+        }
+      }
+
+      // Track-to-Track Deduplication: Merge only genuine duplicate boxes on the same human
+      for (let i = 0; i < this.tracks.length; i++) {
+        for (let j = this.tracks.length - 1; j > i; j--) {
+          const t1 = this.tracks[i];
+          const t2 = this.tracks[j];
+          const trIoU = getIoU(
+            { x: t1.x, y: t1.y, w: t1.width, h: t1.height },
+            { x: t2.x, y: t2.y, w: t2.width, h: t2.height }
+          );
+          const trInter = getInterArea(
+            { x: t1.x, y: t1.y, w: t1.width, h: t1.height },
+            { x: t2.x, y: t2.y, w: t2.width, h: t2.height }
+          );
+          const minArea = Math.min(t1.width * t1.height, t2.width * t2.height);
+          const ioMin = minArea > 0 ? trInter / minArea : 0;
+
+          // Check clothing difference: distinct clothing = distinct people!
+          let distinctColors = false;
+          if (t1.colorSignature && t2.colorSignature) {
+            const cd = Math.hypot(
+              t1.colorSignature[0] - t2.colorSignature[0],
+              t1.colorSignature[1] - t2.colorSignature[1],
+              t1.colorSignature[2] - t2.colorSignature[2]
+            );
+            if (cd > 70) distinctColors = true;
+          }
+
+          // Merge ONLY on genuine physical bounding box overlap (high IoU or high containment)
+          // CRITICAL: NEVER merge based on center distance, which would destroy back-to-back people!
+          if (!distinctColors && (trIoU > 0.50 || (ioMin > 0.78 && trIoU > 0.22))) {
+            // Keep the more established track
+            if ((t2.totalDetections || 0) > (t1.totalDetections || 0) && t2.misses <= t1.misses) {
+              this.tracks[i] = t2;
+            }
+            this.tracks.splice(j, 1);
+          }
+        }
+      }
+
+      // 3. Evaluate active tracks & boundary exit logic
+      const activeResults = [];
+      const borderMarginX = Math.max(40, frameW * 0.08);
+      const borderMarginY = Math.max(40, frameH * 0.08);
+
+      for (let i = this.tracks.length - 1; i >= 0; i--) {
+        const t = this.tracks[i];
+        const isMatched = matchedTrackIndices.has(i);
+
+        if (!isMatched) {
+          t.misses++;
+          // Unconfirmed transient track missed: discard quietly without incrementing counter
+          if (!t.confirmed && t.misses >= 3) {
+            this.tracks.splice(i, 1);
+            continue;
+          }
+        }
+
+        const elapsedSinceSeen = wallClockNow - (t.lastSeenWallClock || wallClockNow);
+        const isAtBoundary = (
+          t.x <= borderMarginX ||
+          t.y <= borderMarginY ||
+          (t.x + t.width) >= (frameW - borderMarginX) ||
+          (t.y + t.height) >= (frameH - borderMarginY)
+        );
+        const allowedGrace = isAtBoundary ? this.exitGraceMs : this.interiorGraceMs;
+
+        if (elapsedSinceSeen > allowedGrace) {
+          // Only save confirmed humans to dormant re-entry memory!
+          if (t.confirmed) {
+            t.departedTime = now;
+            t.departedWallClock = t.lastSeenWallClock || wallClockNow;
+            t.dwellMs = (t.lastSeenWallClock || wallClockNow) - t.firstSeenWallClock;
+            t.accumulatedDwellMs = (t.accumulatedDwellMs || 0) + t.dwellMs;
+            t.exitBbox = { x: t.x, y: t.y, w: t.width, h: t.height };
+            t.isAtBoundary = isAtBoundary;
+            
+            // Replace any older entry with same id
+            this.dormantTracks = this.dormantTracks.filter(d => d.id !== t.id);
+            this.dormantTracks.push(t);
+
+            console.log(`[MemorySystem] 👤 Human #${t.id} left camera view. Armed 60s memory.`);
+            addLogEvent('human', `👤 Human #${t.id} left camera`, `Disappeared at ${new Date(wallClockNow).toLocaleTimeString()} • 60s Re-Entry Memory active`);
+          }
+
+          this.tracks.splice(i, 1);
+          continue;
+        }
+
+        // Occlusion handling:
+        // If seated, keep pinned to seat anchor instead of drifting!
+        if (!isMatched) {
+          if (t.isSeated && t.anchorX !== undefined) {
+            t.x = t.anchorX - t.width / 2;
+            t.y = t.anchorY - t.height / 2;
+          } else if (t.misses < 10) {
+            t.x += t.vx * 0.035;
+            t.y += t.vy * 0.035;
+          }
+        }
+
+        // Live continuous dwell timer
+        const dwellMs = wallClockNow - t.firstSeenWallClock;
+        activeResults.push({
+          ...t,
+          isLive: isMatched,
+          dwellMs,
+          dwellFormatted: formatDwellTime(dwellMs)
+        });
+      }
+
+      activeResults.sort((a, b) => a.id - b.id);
+      return activeResults;
+    }
+
+    getLiveTracks(wallClockNow = Date.now()) {
+      return this.tracks
+        .filter(t => {
+          // Only display confirmed tracks or candidate tracks with at least 2 consecutive detections
+          if (!t.confirmed && (t.confirmHits || 0) < 2) return false;
+          // Seated tracks can stay visible during occlusions up to 25 misses (~2.5s) without flickering
+          const maxMisses = t.isSeated ? 25 : 12;
+          return (t.misses || 0) <= maxMisses;
+        })
+        .map(t => {
+          const dwellMs = wallClockNow - t.firstSeenWallClock;
+          return {
+            ...t,
+            dwellMs,
+            dwellFormatted: formatDwellTime(dwellMs)
+          };
+        });
+    }
+
+    clear() {
+      this.tracks = [];
+      this.dormantTracks = [];
+    }
+
+    resetCounts() {
+      this.tracks = [];
+      this.dormantTracks = [];
+      this.nextId = 1;
+      this.totalUniqueCount = 0;
+    }
+  }
+
+  const humanTracker = new AdvancedHumanTracker();
+
+  let scanFrameCount = 0;
+
+  // Multi-Scale Human Scanner — Accurate people counter for retail / office scenes
+  // Strategy: raise score floor high enough to reject chairs/shadows, validate box
+  // geometry, then two-stage dedup: IoU-based + center-proximity for cross-pass doubles.
+  async function scanHumansMultiScale(arg1, arg2, arg3, arg4, arg5) {
+    let aiW, aiH, sW, sH, confidenceThreshold;
+    if (arg4 !== undefined && arg5 !== undefined) {
+      aiW = arg1; aiH = arg2; sW = arg3; sH = arg4; confidenceThreshold = arg5;
+    } else {
+      sW = arg1; sH = arg2; confidenceThreshold = arg3;
+      aiW = aiBufferCanvas.width || sW;
+      aiH = aiBufferCanvas.height || sH;
+    }
+
+    scanFrameCount++;
+
+    // ─── Score floor: 0.25 for reliable detection of seated / classroom humans ────
+    const scanScoreFloor = 0.25;
+
+    const scaleX = sW / (aiW || sW || 1);
+    const scaleY = sH / (aiH || sH || 1);
+    const canvasIsReady = (c) => c && c.width > 0 && c.height > 0;
+
+    // ─── Human Entity & Geometry validator (STRICTLY HUMANS ONLY) ───
+    const minHeightFrac = 0.03;   // Allow seated people behind desks
+    const frameArea = sW * sH;
+    function isValidEntityBox(bx, by, bw, bh, cls) {
+      // STRICT: Reject any entity that is not a person/human
+      if (cls !== 'person' && cls !== 'human') return false;
+      if (bw < 12 || bh < 20) return false;        // Too tiny
+      if ((bw * bh) < frameArea * 0.001) return false;  // Hairline sliver / noise
+      if (bw > bh * 2.2) return false; // Aberrant horizontal bar (desks, sofas, tables) - allow seated people
+      if (bh > bw * 8.5) return false; // Aberrant vertical sliver (poles, wires)
+      return true;
+    }
+
+    // ─── Pass 1: Full-frame scan (YOLOv8 Deep AI or Browser MobileNet) ───
+    let raw = [];
+    if (canvasIsReady(aiBufferCanvas)) {
+      let yoloSucceeded = false;
+
+      // 1. High-Precision YOLOv8 + OpenCV Microservice Scan (STRICTLY HUMANS ONLY)
+      if (aiEngineMode === 'yolo') {
+        try {
+          const frameJpeg = aiBufferCanvas.toDataURL('image/jpeg', 0.68);
+          const yoloRes = await fetch('/api/vision/yolo/detect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: frameJpeg, conf: scanScoreFloor, iou: 0.45, classes: [0] })
+          });
+          if (yoloRes.ok) {
+            const data = await yoloRes.json();
+            if (data.success && Array.isArray(data.detections)) {
+              data.detections.forEach(det => {
+                const entityCls = (det.class || 'person').toLowerCase();
+                // STRICT: Humans only
+                if (entityCls !== 'person' && entityCls !== 'human') return;
+
+                const bx = det.bbox[0] * scaleX;
+                const by = det.bbox[1] * scaleY;
+                const bw = det.bbox[2] * scaleX;
+                const bh = det.bbox[3] * scaleY;
+                if (isValidEntityBox(bx, by, bw, bh, entityCls)) {
+                  raw.push({
+                    bbox: [bx, by, bw, bh],
+                    aiBbox: det.bbox,
+                    score: det.score,
+                    source: 'yolov8',
+                    entityClass: 'person',
+                    reidFeatures: det.reid_features || null,
+                    colorSignature: det.color_signature || null
+                  });
+                }
+              });
+              yoloSucceeded = true;
+            }
+          }
+        } catch (_yoloErr) {
+          // Gracefully fall through to browser MobileNet
+        }
+      }
+
+      // 2. Browser MobileNetV2 Scan (STRICTLY HUMANS ONLY)
+      if (!yoloSucceeded && humanModel) {
+        try {
+          const preds = await humanModel.detect(aiBufferCanvas, 20, scanScoreFloor);
+          (preds || []).forEach(p => {
+            const entityCls = (p.class || '').toLowerCase();
+            // STRICT: Reject chairs, remotes, phones, dogs, cats, cups, etc.
+            if (entityCls !== 'person' && entityCls !== 'human') return;
+
+            const bx = p.bbox[0] * scaleX, by = p.bbox[1] * scaleY;
+            const bw = p.bbox[2] * scaleX, bh = p.bbox[3] * scaleY;
+            if (isValidEntityBox(bx, by, bw, bh, entityCls)) {
+              raw.push({
+                bbox: [bx, by, bw, bh],
+                aiBbox: p.bbox,
+                score: p.score,
+                source: 'mobilenet',
+                entityClass: 'person'
+              });
+            }
+          });
+        } catch (_e) { return []; }
+      }
+    } else { return []; }
+
+    return applyNms(raw, scanScoreFloor);
+  }
+
+  // Multi-Criteria NMS: IoU + Containment (IoMin) + Center Proximity
+  function applyNms(boxes, threshold) {
+    if (!boxes || boxes.length === 0) return [];
+
+    // Sort highest confidence first
+    boxes.sort((a, b) => b.score - a.score);
+
+    function iou(b1, b2) {
+      const x1 = Math.max(b1[0], b2[0]);
+      const y1 = Math.max(b1[1], b2[1]);
+      const x2 = Math.min(b1[0] + b1[2], b2[0] + b2[2]);
+      const y2 = Math.min(b1[1] + b1[3], b2[1] + b2[3]);
+      const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+      const union = (b1[2] * b1[3]) + (b2[2] * b2[3]) - inter;
+      return union > 0 ? inter / union : 0;
+    }
+
+    function ioMin(b1, b2) {
+      const x1 = Math.max(b1[0], b2[0]);
+      const y1 = Math.max(b1[1], b2[1]);
+      const x2 = Math.min(b1[0] + b1[2], b2[0] + b2[2]);
+      const y2 = Math.min(b1[1] + b1[3], b2[1] + b2[3]);
+      const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1);
+      const minArea = Math.min(b1[2] * b1[3], b2[2] * b2[3]);
+      return minArea > 0 ? inter / minArea : 0;
+    }
+
+    const results = [];
+    for (const item of boxes) {
+      if (item.score < threshold) continue;
+      let dup = false;
+      const [ix, iy, iw, ih] = item.bbox;
+      const icx = ix + iw / 2;
+      const icy = iy + ih / 2;
+
+      for (const kept of results) {
+        const [kx, ky, kw, kh] = kept.bbox;
+        const kcx = kx + kw / 2;
+        const kcy = ky + kh / 2;
+
+        const iouVal = iou(item.bbox, kept.bbox);
+        const ioMinVal = ioMin(item.bbox, kept.bbox);
+
+        // Genuine duplicate detection (e.g. multi-scale detector proposing double boxes for the same human):
+        // 1. Significant IoU overlap (>0.48)
+        // 2. High Containment where one box is mostly nested inside the other (>0.75 containment AND >0.15 IoU)
+        // CRITICAL: NEVER suppress solely on center distance, as individuals sitting back-to-back
+        // or side-by-side naturally have close center coordinates without being the same person!
+        if (iouVal > 0.48 || (ioMinVal > 0.75 && iouVal > 0.15)) {
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) results.push(item);
+    }
+
+    return results;
+  }
+
+  // Multi-zone body color extractor (upper, torso, lower) for invariant re-entry recognition
+  function extractBodyColorProfile(ctx, bbox, frameW, frameH) {
+    if (!ctx || !bbox) return { torso: null, upper: null, lower: null };
+    const [x, y, w, h] = bbox;
+
+    function getAverageRGB(y1Frac, y2Frac, x1Frac, x2Frac) {
+      const sx = Math.round(Math.max(0, Math.min(frameW - 2, x + w * x1Frac)));
+      const sy = Math.round(Math.max(0, Math.min(frameH - 2, y + h * y1Frac)));
+      const sw = Math.max(2, Math.min(frameW - sx, Math.round(w * (x2Frac - x1Frac))));
+      const sh = Math.max(2, Math.min(frameH - sy, Math.round(h * (y2Frac - y1Frac))));
+      try {
+        const imgData = ctx.getImageData(sx, sy, sw, sh);
+        const data = imgData.data;
+        let r = 0, g = 0, b = 0, cnt = 0;
+        const step = Math.max(1, Math.floor((sw * sh) / 60));
+        for (let i = 0; i < data.length; i += step * 4) {
+          r += data[i];
+          g += data[i + 1];
+          b += data[i + 2];
+          cnt++;
+        }
+        return cnt > 0 ? [Math.round(r / cnt), Math.round(g / cnt), Math.round(b / cnt)] : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    const upper = getAverageRGB(0.05, 0.25, 0.20, 0.80);
+    const torso = getAverageRGB(0.25, 0.65, 0.15, 0.85);
+    const lower = getAverageRGB(0.65, 0.95, 0.15, 0.85);
+
+    return { torso, upper, lower };
+  }
+
+  function extractTorsoColor(ctx, bbox, frameW, frameH) {
+    const prof = extractBodyColorProfile(ctx, bbox, frameW, frameH);
+    return prof.torso;
+  }
+
+  // Coordinate mapping for letterboxed object-fit: contain video
+  function getRenderTransformation(sourceWidth, sourceHeight, canvasEl) {
+    const sWidth = sourceWidth || canvasEl.width;
+    const sHeight = sourceHeight || canvasEl.height;
+    const cWidth = canvasEl.width;
+    const cHeight = canvasEl.height;
+
+    if (!sWidth || !sHeight || !cWidth || !cHeight) {
+      return { offsetX: 0, offsetY: 0, scaleX: 1, scaleY: 1 };
+    }
+
+    const sourceRatio = sWidth / sHeight;
+    const canvasRatio = cWidth / cHeight;
+
+    let renderW, renderH, offsetX, offsetY;
+
+    if (currentFitMode === 'cover') {
+      // In cover mode (Fill), video fills canvas and excess is cropped
+      if (canvasRatio > sourceRatio) {
+        renderW = cWidth;
+        renderH = cWidth / sourceRatio;
+        offsetX = 0;
+        offsetY = (cHeight - renderH) / 2;
+      } else {
+        renderH = cHeight;
+        renderW = cHeight * sourceRatio;
+        offsetX = (cWidth - renderW) / 2;
+        offsetY = 0;
+      }
+    } else {
+      // In contain mode (Fit), video is letterboxed/pillarboxed
+      if (canvasRatio > sourceRatio) {
+        renderH = cHeight;
+        renderW = cHeight * sourceRatio;
+        offsetX = (cWidth - renderW) / 2;
+        offsetY = 0;
+      } else {
+        renderW = cWidth;
+        renderH = cWidth / sourceRatio;
+        offsetX = 0;
+        offsetY = (cHeight - renderH) / 2;
+      }
+    }
+
+    return {
+      offsetX,
+      offsetY,
+      renderW,
+      renderH,
+      scaleX: renderW / sWidth,
+      scaleY: renderH / sHeight
+    };
+  }
+
+  // Draw clean solid monochrome bounding box with Role State, Global ID, Dwell Timer, and Motion State
+  function drawHumanTargetBox(ctx, x, y, width, height, human) {
+    const role = human.roleType || 'UNKNOWN';
+    const entityType = (human.entityClass || human.class || 'person').toUpperCase();
+    const themeColor = '#ffffff';
+    const tintColor = 'rgba(255, 255, 255, 0.04)';
+
+    ctx.save();
+
+    // 1. Semi-transparent body highlight fill
+    ctx.fillStyle = tintColor;
+    ctx.fillRect(x, y, width, height);
+
+    // 2. Solid box boundary
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = themeColor;
+    ctx.lineWidth = 1.8;
+    ctx.strokeRect(x, y, width, height);
+
+    // 3. Cybernetic targeting corner brackets (4 corners)
+    const bracketLen = Math.max(10, Math.min(26, width * 0.20, height * 0.20));
+    ctx.lineWidth = 2.4;
+    ctx.shadowBlur = 0;
+
+    // Top-Left corner
+    ctx.beginPath();
+    ctx.moveTo(x, y + bracketLen); ctx.lineTo(x, y); ctx.lineTo(x + bracketLen, y);
+    // Top-Right corner
+    ctx.moveTo(x + width - bracketLen, y); ctx.lineTo(x + width, y); ctx.lineTo(x + width, y + bracketLen);
+    // Bottom-Left corner
+    ctx.moveTo(x, y + height - bracketLen); ctx.lineTo(x, y + height); ctx.lineTo(x + bracketLen, y + height);
+    // Bottom-Right corner
+    ctx.moveTo(x + width - bracketLen, y + height); ctx.lineTo(x + width, y + height); ctx.lineTo(x + width, y + height - bracketLen);
+    ctx.stroke();
+
+    // 4. Center Targeting Reticle
+    const cx = x + width / 2;
+    const cy = y + height / 2;
+    const reticleSize = 7;
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.arc(cx, cy, 5, 0, Math.PI * 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(cx - reticleSize, cy); ctx.lineTo(cx + reticleSize, cy);
+    ctx.moveTo(cx, cy - reticleSize); ctx.lineTo(cx, cy + reticleSize);
+    ctx.stroke();
+
+    // 5. Header HUD Pill Badges (Entity Class / Role Identity + Live Dwell Timer)
+    const isHuman = entityType === 'PERSON';
+    const confPercent = Math.round((human.matchScore || human.roleConfidence || human.score) * 100);
+    
+    // Prominently display "HUMAN #1" and if re-entered within 20s: "HUMAN #1 // RE-ENTERED (V#2)"
+    let idText;
+    if (isHuman) {
+      const visitSuffix = (human.visitCount && human.visitCount > 1) ? ` // V#${human.visitCount}` : '';
+      const reenterSuffix = human.reentered ? ' // RE-ENTERED' : '';
+      const namePrefix = human.personName ? `[${human.personName}] ` : '';
+      idText = `${namePrefix}HUMAN #${human.id}${reenterSuffix}${visitSuffix} [${confPercent}%]`;
+    } else {
+      idText = `${entityType} #${human.id} [${confPercent}%]`;
+    }
+    const timerText = `⏱️ ${human.dwellFormatted || '00:00'}`;
+
+    ctx.font = 'bold 11px "Courier New", monospace';
+    const idWidth = ctx.measureText(idText).width + 18;
+    const timerWidth = ctx.measureText(timerText).width + 14;
+    const badgeHeight = 22;
+    const badgeY = Math.max(0, y - badgeHeight - 3);
+
+    // Badge 1: Role, Entity Identity & Confidence Pill
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(10, 14, 20, 0.94)';
+    ctx.fillRect(x, badgeY, idWidth, badgeHeight);
+    ctx.strokeStyle = themeColor;
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x, badgeY, idWidth, badgeHeight);
+
+    // Status dot
+    ctx.fillStyle = themeColor;
+    ctx.beginPath();
+    ctx.arc(x + 8, badgeY + badgeHeight / 2, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+
+    // ID Text
+    ctx.fillStyle = themeColor;
+    ctx.fillText(idText, x + 16, badgeY + 15);
+
+    // Badge 2: Dwell Timer on the Box
+    const timerX = x + idWidth + 4;
+    ctx.fillStyle = 'rgba(10, 14, 20, 0.94)';
+    ctx.fillRect(timerX, badgeY, timerWidth, badgeHeight);
+    ctx.strokeStyle = themeColor;
+    ctx.lineWidth = 1.2;
+    ctx.strokeRect(timerX, badgeY, timerWidth, badgeHeight);
+
+    // Dwell Time text
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(timerText, timerX + 7, badgeY + 15);
+
+    // 6. Bottom Coordinates & Motion State Tag
+    const motionStr = human.motionState === 'WALKING'
+      ? `WALKING ${human.direction}`
+      : 'STEADY';
+    const recTag = human.reentered ? '20s MEMORY: RE-ENTERED // ' : (human.isRecognized ? 'RE-ID MATCHED // ' : '');
+    const subText = `${recTag}[${isHuman ? 'HUMAN' : entityType} #${human.id}] ${motionStr} // [${Math.round(x)},${Math.round(y)}]`;
+
+    ctx.font = '9px "Courier New", monospace';
+    ctx.fillStyle = themeColor;
+    ctx.fillText(subText, x + 4, y + height - 6);
+
+    ctx.restore();
+  }
+
+  // Load COCO-SSD Human Model (Local offline model with CDN fallback)
+  async function loadHumanModel() {
+    if (humanModel) return humanModel;
+    if (humanModelLoading) return null;
+    humanModelLoading = true;
+    updateBotUIState('loading');
+
+    try {
+      if (typeof cocoSsd !== 'undefined') {
+        console.log('Loading local COCO-SSD Human Bot AI model...');
+        humanModel = await cocoSsd.load({
+          modelUrl: '/models/mobilenet_v2/model.json'
+        });
+        console.log('Local Human Bot AI model loaded successfully!');
+      }
+    } catch (err) {
+      console.warn('Local model weights load failed, trying default/CDN fallback:', err);
+      try {
+        humanModel = await cocoSsd.load();
+        console.log('Default COCO-SSD Human Bot AI model loaded successfully!');
+      } catch (fallbackErr) {
+        console.error('Failed to load human detection model:', fallbackErr);
+        alert('Could not initialize Human Bot AI model: ' + fallbackErr.message);
+        humanModelLoading = false;
+        updateBotUIState('error');
+        return null;
+      }
+    }
+
+    humanModelLoading = false;
+    updateBotUIState(humanBotActive ? 'active' : 'ready');
+    return humanModel;
+  }
+
+  function updateBotUIState(state) {
+    if (!btnHumanBotToggle) return;
+    if (state === 'loading') {
+      btnHumanBotToggle.classList.remove('btn-active');
+      humanBotBtnText.textContent = 'Loading AI...';
+      btnHumanBotToggle.disabled = true;
+      if (telemetryBotStatus) {
+        telemetryBotStatus.textContent = 'LOADING...';
+        telemetryBotStatus.style.color = 'var(--accent-amber)';
+      }
+      if (osdHumanBot) osdHumanBot.textContent = '🤖 BOT: LOADING...';
+    } else if (state === 'active') {
+      btnHumanBotToggle.classList.add('btn-active');
+      humanBotBtnText.textContent = 'Human Bot: ON';
+      btnHumanBotToggle.disabled = false;
+      if (telemetryBotStatus) {
+        telemetryBotStatus.textContent = 'ACTIVE (SCANNING)';
+        telemetryBotStatus.style.color = 'var(--accent-green)';
+      }
+      if (botTelemetryDot) botTelemetryDot.classList.add('active');
+      if (osdHumanBot) {
+        osdHumanBot.textContent = '🤖 BOT: ACTIVE';
+        osdHumanBot.style.color = 'var(--accent-green)';
+      }
+    } else if (state === 'ready' || state === 'off') {
+      btnHumanBotToggle.classList.remove('btn-active');
+      humanBotBtnText.textContent = 'Human Bot';
+      btnHumanBotToggle.disabled = false;
+      if (telemetryBotStatus) {
+        telemetryBotStatus.textContent = humanModel ? 'READY (OFF)' : 'OFF';
+        telemetryBotStatus.style.color = 'var(--accent-green)';
+      }
+      if (botTelemetryDot) botTelemetryDot.classList.remove('active');
+      if (osdHumanBot) {
+        osdHumanBot.textContent = '🤖 BOT: OFF';
+        osdHumanBot.style.color = '';
+      }
+      clearHumanCanvas();
+    } else if (state === 'error') {
+      btnHumanBotToggle.classList.remove('btn-active');
+      humanBotBtnText.textContent = 'Bot Error';
+      btnHumanBotToggle.disabled = false;
+      if (telemetryBotStatus) {
+        telemetryBotStatus.textContent = 'ERROR';
+        telemetryBotStatus.style.color = 'var(--accent-red)';
+      }
+      if (botTelemetryDot) botTelemetryDot.classList.remove('active');
+      if (osdHumanBot) osdHumanBot.textContent = '🤖 BOT: ERROR';
+    }
+  }
+
+  function clearHumanCanvas() {
+    if (!motionCanvas) return;
+    const ctx = motionCanvas.getContext('2d');
+    ctx.clearRect(0, 0, motionCanvas.width, motionCanvas.height);
+    if (humanCountMeter) humanCountMeter.textContent = '0';
+    if (telemetryHumanCount) telemetryHumanCount.textContent = '0';
+    if (humanTracker) humanTracker.clear();
+  }
+
+  // Real-time Decoupled Detection & 60 FPS Sticky HUD Rendering Architecture
+  let isInferring = false;
+  let inferenceTimeoutId = null;
+
+  // 60 FPS Buttery-Smooth HUD Rendering Loop (Eliminates Jitter & Screen Freezes)
+  function renderHumanHUDLoop() {
+    if (!humanBotActive) return;
+
+    // Fast dimension sync without forced reflow
+    const mw = monitorWrapper.clientWidth;
+    const mh = monitorWrapper.clientHeight;
+    if (mw > 0 && mh > 0 && (motionCanvas.width !== mw || motionCanvas.height !== mh)) {
+      motionCanvas.width = mw;
+      motionCanvas.height = mh;
+    }
+
+    const isVideoMode = remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none';
+    const rawSW = isVideoMode ? remoteVideo.videoWidth : (fallbackImgFeed?.naturalWidth || 1280);
+    const rawSH = isVideoMode ? remoteVideo.videoHeight : (fallbackImgFeed?.naturalHeight || 720);
+    const rot = (currentRotation || 0) % 360;
+    const swapDims = (rot === 90 || rot === 270);
+    const sW = swapDims ? rawSH : rawSW;
+    const sH = swapDims ? rawSW : rawSH;
+
+    const ctx = motionCanvas.getContext('2d');
+    ctx.clearRect(0, 0, motionCanvas.width, motionCanvas.height);
+
+    const wallClockNow = Date.now();
+    const liveTracks = humanTracker.getLiveTracks(wallClockNow);
+    const currentCount = liveTracks.length;
+
+    if (humanCountMeter) humanCountMeter.textContent = String(currentCount);
+    if (telemetryHumanCount) telemetryHumanCount.textContent = String(currentCount);
+    if (telemetryTotalTracked) telemetryTotalTracked.textContent = String(humanTracker.totalUniqueCount);
+
+    if (osdHumanBot) {
+      osdHumanBot.textContent = currentCount > 0 
+        ? `🤖 BOT: ${currentCount} IN VIEW [${humanTracker.totalUniqueCount} TOTAL]` 
+        : '🤖 BOT: ACTIVE (SCANNING)';
+    }
+
+    if (sW > 0 && sH > 0 && currentCount > 0) {
+      const transform = getRenderTransformation(sW, sH, motionCanvas);
+
+      // Render glowing green target boxes with unique numbers and continuous live dwell timers
+      liveTracks.forEach((human) => {
+        // Predictive motion compensation & snappy 60 FPS tracking
+        const dtSec = Math.min(0.20, Math.max(0, (wallClockNow - (human.lastSeenWallClock || wallClockNow)) / 1000));
+        // Project position forward along velocity vector so the box stays glued to the moving person
+        const targetX = human.x + (human.vx || 0) * dtSec;
+        const targetY = human.y + (human.vy || 0) * dtSec;
+        const targetW = human.width;
+        const targetH = human.height;
+
+        if (human.renderX === undefined || isNaN(human.renderX) || Math.hypot(targetX - human.renderX, targetY - human.renderY) > 60) {
+          human.renderX = targetX;
+          human.renderY = targetY;
+          human.renderW = targetW;
+          human.renderH = targetH;
+        } else {
+          // Snappy 0.20 / 0.80 interpolation: 80% towards target each frame -> reaches 96% in 2 frames (33ms) with zero jitter!
+          human.renderX = human.renderX * 0.20 + targetX * 0.80;
+          human.renderY = human.renderY * 0.20 + targetY * 0.80;
+          human.renderW = human.renderW * 0.25 + targetW * 0.75;
+          human.renderH = human.renderH * 0.25 + targetH * 0.75;
+        }
+
+        const bx = transform.offsetX + (human.renderX * transform.scaleX);
+        const by = transform.offsetY + (human.renderY * transform.scaleY);
+        const bw = human.renderW * transform.scaleX;
+        const bh = human.renderH * transform.scaleY;
+
+        drawHumanTargetBox(ctx, bx, by, bw, bh, human);
+      });
+    }
+
+    if (humanBotActive) {
+      humanDetectionAnimId = requestAnimationFrame(renderHumanHUDLoop);
+    }
+  }
+
+  // Background Neural Inference Loop (Runs asynchronously without blocking UI rendering)
+  async function triggerNextInference() {
+    if (!humanBotActive) return;
+
+    if (isInferring || (aiEngineMode !== 'yolo' && !humanModel)) {
+      inferenceTimeoutId = setTimeout(triggerNextInference, 40);
+      return;
+    }
+
+    const isVideoMode = remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none';
+    const sourceEl = isVideoMode ? remoteVideo : fallbackImgFeed;
+
+    if (!sourceEl || (isVideoMode && remoteVideo.readyState < 2) || (!isVideoMode && !fallbackImgFeed?.naturalWidth)) {
+      inferenceTimeoutId = setTimeout(triggerNextInference, 50);
+      return;
+    }
+
+    isInferring = true;
+    const now = performance.now();
+    const wallClockNow = Date.now();
+
+    try {
+      const rawSW = isVideoMode ? remoteVideo.videoWidth : fallbackImgFeed.naturalWidth;
+      const rawSH = isVideoMode ? remoteVideo.videoHeight : fallbackImgFeed.naturalHeight;
+
+      if (rawSW > 0 && rawSH > 0) {
+        const rot = (currentRotation || 0) % 360;
+        const swapDims = (rot === 90 || rot === 270);
+        const sW = swapDims ? rawSH : rawSW;
+        const sH = swapDims ? rawSW : rawSH;
+
+        // High-speed downscaled AI resolution (Capped at 640px for high-accuracy human detection)
+        const maxAiDim = 640;
+        let aiW = rawSW;
+        let aiH = rawSH;
+        if (rawSW > maxAiDim || rawSH > maxAiDim) {
+          if (rawSW >= rawSH) {
+            aiW = maxAiDim;
+            aiH = Math.round((rawSH / rawSW) * maxAiDim);
+          } else {
+            aiH = maxAiDim;
+            aiW = Math.round((rawSW / rawSH) * maxAiDim);
+          }
+        }
+
+        const finalAiW = swapDims ? aiH : aiW;
+        const finalAiH = swapDims ? aiW : aiH;
+
+        if (aiBufferCanvas.width !== finalAiW || aiBufferCanvas.height !== finalAiH) {
+          aiBufferCanvas.width = finalAiW;
+          aiBufferCanvas.height = finalAiH;
+        }
+
+        aiBufferCtx.save();
+        aiBufferCtx.clearRect(0, 0, finalAiW, finalAiH);
+        if (rot === 0) {
+          aiBufferCtx.drawImage(sourceEl, 0, 0, aiW, aiH);
+        } else {
+          aiBufferCtx.translate(finalAiW / 2, finalAiH / 2);
+          aiBufferCtx.rotate((rot * Math.PI) / 180);
+          aiBufferCtx.drawImage(sourceEl, -aiW / 2, -aiH / 2, aiW, aiH);
+        }
+        aiBufferCtx.restore();
+
+        // Execute multi-scale scan for both close & distant humans
+        const instantHumans = await scanHumansMultiScale(finalAiW, finalAiH, sW, sH, humanDetectionConfidence);
+
+        // Attach multi-zone body color signatures for 20s re-entry recognition
+        if (instantHumans && instantHumans.length > 0) {
+          instantHumans.forEach(h => {
+            const aiBox = h.aiBbox || [h.bbox[0] * (aiW / sW), h.bbox[1] * (aiH / sH), h.bbox[2] * (aiW / sW), h.bbox[3] * (aiH / sH)];
+            const colorProf = extractBodyColorProfile(aiBufferCtx, aiBox, aiW, aiH);
+            h.colorProfile = colorProf;
+            if (!h.colorSignature && colorProf.torso) {
+              h.colorSignature = colorProf.torso;
+            }
+            if (colorProf.lower) {
+              h.lowerColor = colorProf.lower;
+            }
+            if (colorProf.upper) {
+              h.upperColor = colorProf.upper;
+            }
+          });
+        }
+
+        // Update advanced sticky tracker with 20s re-entry memory and boundary exit detection
+        const activeTracks = humanTracker.update(instantHumans, now, wallClockNow, sW, sH);
+
+        // Run multi-modal Staff / Customer / Visitor recognition pipeline on active tracks
+        processTracksRecognition(activeTracks, sW, sH, wallClockNow);
+      }
+    } catch (err) {
+      // Transient frame error
+    } finally {
+      isInferring = false;
+      if (humanBotActive) {
+        inferenceTimeoutId = setTimeout(triggerNextInference, 12);
+      }
+    }
+  }
+
+  function runHumanDetectionCycle() {
+    if (humanDetectionAnimId) cancelAnimationFrame(humanDetectionAnimId);
+    if (inferenceTimeoutId) clearTimeout(inferenceTimeoutId);
+    renderHumanHUDLoop();
+    triggerNextInference();
+  }
+
+  // Automatic HD Snapshot on Human Detection with burned Green Target Boxes, Unique IDs and Dwell Timers
+  function captureHumanSnapshot(trackedHumans, sW, sH) {
+    const width = sW || 1280;
+    const height = sH || 720;
+
+    const snapCanvas = document.createElement('canvas');
+    snapCanvas.width = width;
+    snapCanvas.height = height;
+    const ctx = snapCanvas.getContext('2d');
+
+    try {
+      ctx.drawImage(aiBufferCanvas, 0, 0, width, height);
+    } catch (e) {
+      return;
+    }
+
+    // Burn green bounding boxes on the snapshot frame
+    trackedHumans.forEach((human) => {
+      drawHumanTargetBox(ctx, human.x, human.y, human.width, human.height, human);
+    });
+
+    // Burn CCTV watermark
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(16, height - 52, 580, 38);
+    ctx.fillStyle = '#00ff88';
+    ctx.font = 'bold 15px monospace';
+    ctx.fillText(`CEOVA CCTV // 🤖 HUMAN BOT [${trackedHumans.length} IN VIEW, ${humanTracker.totalUniqueCount} TOTAL] // ${osdTimestamp.textContent}`, 26, height - 26);
+
+    const dataUrl = snapCanvas.toDataURL('image/png');
+    addLogEvent(
+      'human',
+      `👤 Human Locked: #${trackedHumans[0]?.id || 1} (${trackedHumans.length} in view)`,
+      `Dwell: ${trackedHumans[0]?.dwellFormatted || '00:00'} • ${trackedHumans[0]?.motionState || 'STEADY'}`,
+      dataUrl
+    );
+  }
+
+  // Human Bot Toggle Button
+  if (btnHumanBotToggle) {
+    btnHumanBotToggle.addEventListener('click', async () => {
+      humanBotActive = !humanBotActive;
+      if (humanBotActive) {
+        if (aiEngineMode === 'yolo') {
+          // Instant start via server YOLOv8
+          updateBotUIState('active');
+          runHumanDetectionCycle();
+          // Pre-load MobileNet in background for seamless offline fallback
+          loadHumanModel().catch(() => {});
+        } else {
+          // Client-side MobileNetV2
+          const model = await loadHumanModel();
+          if (model) {
+            updateBotUIState('active');
+            runHumanDetectionCycle();
+          } else {
+            humanBotActive = false;
+            updateBotUIState('off');
+          }
+        }
+      } else {
+        if (humanDetectionAnimId) {
+          cancelAnimationFrame(humanDetectionAnimId);
+          humanDetectionAnimId = null;
+        }
+        if (inferenceTimeoutId) {
+          clearTimeout(inferenceTimeoutId);
+          inferenceTimeoutId = null;
+        }
+        clearHumanCanvas();
+        updateBotUIState('off');
+      }
+    });
+  }
+
+  // Reset Unique Track Counter Button
+  if (btnResetTrackCount) {
+    btnResetTrackCount.addEventListener('click', () => {
+      if (humanTracker) {
+        humanTracker.resetCounts();
+      }
+      if (telemetryTotalTracked) {
+        telemetryTotalTracked.textContent = '0';
+      }
+      addLogEvent('system', '🔄 Person counter reset', 'All track IDs and cumulative count reset to 0');
+    });
+  }
+
+  // Globally accessible helper to start AI Detection Bot
+  window.startAiBot = async function() {
+    if (!humanBotActive && btnHumanBotToggle) {
+      btnHumanBotToggle.click();
+    }
+  };
+
+  // AI Detection Engine Mode Switcher (YOLOv8 vs MobileNetV2)
+  function updateAiEngineUI() {
+    if (!btnAiEngineToggle || !aiEngineBtnText) return;
+    if (aiEngineMode === 'yolo') {
+      btnAiEngineToggle.classList.add('active-yolo');
+      aiEngineBtnText.innerHTML = '🚀 YOLOv8 AI';
+      btnAiEngineToggle.title = 'Current Engine: YOLOv8 Deep AI (Server GPU/MPS) — Click to switch to MobileNetV2';
+    } else {
+      btnAiEngineToggle.classList.remove('active-yolo');
+      aiEngineBtnText.innerHTML = '⚡ MobileNet AI';
+      btnAiEngineToggle.title = 'Current Engine: MobileNetV2 (Browser Local) — Click to switch to YOLOv8';
+    }
+  }
+
+  if (btnAiEngineToggle) {
+    btnAiEngineToggle.addEventListener('click', () => {
+      aiEngineMode = aiEngineMode === 'yolo' ? 'mobilenet' : 'yolo';
+      updateAiEngineUI();
+      console.log('[AI_ENGINE] Mode switched to:', aiEngineMode);
+    });
+    updateAiEngineUI();
+  }
+
+  // Bot Confidence Slider Listener
+  if (botConfidence) {
+    botConfidence.addEventListener('input', (e) => {
+      const val = parseInt(e.target.value, 10);
+      humanDetectionConfidence = val / 100;
+      if (confidenceValText) confidenceValText.textContent = `${val}%`;
+    });
+  }
+
+  // 14. Incident & Capture Log Management
+  function addLogEvent(type, title, description, thumbnailDataUrl = null, videoUrl = null) {
+    emptyLogState.style.display = 'none';
+    incidentCounter++;
+    logCount.textContent = String(incidentCounter);
+
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString();
+
+    const item = document.createElement('div');
+    item.className = 'event-item';
+
+    let thumbHtml = '';
+    if (thumbnailDataUrl) {
+      thumbHtml = `<img src="${thumbnailDataUrl}" class="event-thumb" alt="thumb" title="Click to view full image" />`;
+    } else {
+      thumbHtml = `<div class="event-thumb" style="display:flex;align-items:center;justify-content:center;color:#666;">🎥</div>`;
+    }
+
+    item.innerHTML = `
+      ${thumbHtml}
+      <div class="event-details">
+        <span class="event-type ${type === 'motion' ? 'motion' : (type === 'human' ? 'human' : '')}">${title}</span>
+        <span class="event-time">${timeStr} • ${description}</span>
+      </div>
+    `;
+
+    // Click to view thumbnail
+    if (thumbnailDataUrl) {
+      const imgEl = item.querySelector('.event-thumb');
+      imgEl.onclick = () => {
+        const win = window.open();
+        win.document.write(`<img src="${thumbnailDataUrl}" style="max-width:100vw; background:#000;"/>`);
+      };
+    }
+
+    eventsList.prepend(item);
+  }
+
+  // 15. Standby / Pair Dialog Toggle
+  if (btnShowQr) {
+    btnShowQr.addEventListener('click', () => {
+      if (standbyOverlay) standbyOverlay.classList.toggle('hidden');
+    });
+  }
+
+  const btnHeaderConnect = document.getElementById('btnHeaderConnectCam');
+  if (btnHeaderConnect) {
+    btnHeaderConnect.addEventListener('click', () => {
+      if (standbyOverlay) standbyOverlay.classList.remove('hidden');
+    });
+  }
+
+  const btnCloseStandby = document.getElementById('btnCloseStandby');
+  if (btnCloseStandby) {
+    btnCloseStandby.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (standbyOverlay) standbyOverlay.classList.add('hidden');
+    });
+  }
+
+  if (standbyOverlay) {
+    standbyOverlay.addEventListener('click', (e) => {
+      if (e.target === standbyOverlay) {
+        standbyOverlay.classList.add('hidden');
+      }
+    });
+  }
+
+  // 16. Fullscreen Toggle
+  btnFullscreen.addEventListener('click', () => {
+    if (!document.fullscreenElement) {
+      monitorWrapper.requestFullscreen().catch(err => {
+        alert(`Error attempting to enable full-screen mode: ${err.message}`);
+      });
+    } else {
+      document.exitFullscreen();
+    }
+  });
+
+  // 17. Aspect Ratio, Scaling & Rotation Controls
+  let currentAspectMode = localStorage.getItem('ceova_aspect_mode') || 'auto'; // 'auto' | '16:9' | '9:16'
+  let currentFitMode = localStorage.getItem('ceova_fit_mode') || 'contain';    // 'contain' (Fit) | 'cover' (Fill)
+  let currentRotation = parseInt(localStorage.getItem('ceova_rotation') || '0', 10); // 0 | 90 | 180 | 270
+  let lastAutoDetectedAspect = null;
+
+  function syncCanvasDimensions() {
+    if (!motionCanvas || !monitorWrapper) return;
+    const rect = monitorWrapper.getBoundingClientRect();
+    if (rect.width > 0 && rect.height > 0) {
+      const rw = Math.round(rect.width);
+      const rh = Math.round(rect.height);
+      if (motionCanvas.width !== rw || motionCanvas.height !== rh) {
+        motionCanvas.width = rw;
+        motionCanvas.height = rh;
+      }
+    }
+  }
+
+  function applyAspectMode(mode, save = true) {
+    if (save) {
+      currentAspectMode = mode;
+      localStorage.setItem('ceova_aspect_mode', mode);
+    }
+
+    const isVideoMode = remoteVideo.videoWidth > 0 && remoteVideo.style.display !== 'none';
+    const vW = isVideoMode ? remoteVideo.videoWidth : (fallbackImgFeed?.naturalWidth || 1280);
+    const vH = isVideoMode ? remoteVideo.videoHeight : (fallbackImgFeed?.naturalHeight || 720);
+    const isStreamPortrait = vH > vW;
+
+    let targetRatio = mode;
+    if (mode === 'auto') {
+      targetRatio = isStreamPortrait ? '9:16' : '16:9';
+      lastAutoDetectedAspect = targetRatio;
+    }
+
+    monitorWrapper.classList.remove('aspect-16-9', 'aspect-9-16');
+    if (targetRatio === '9:16') {
+      monitorWrapper.classList.add('aspect-9-16');
+    } else {
+      monitorWrapper.classList.add('aspect-16-9');
+    }
+
+    if (aspectBtnText) {
+      if (currentAspectMode === 'auto') {
+        aspectBtnText.textContent = `Aspect: Auto (${targetRatio})`;
+      } else {
+        aspectBtnText.textContent = `Aspect: ${currentAspectMode}`;
+      }
+    }
+
+    if (osdAspectBadge) {
+      osdAspectBadge.textContent = `📐 ${currentAspectMode === 'auto' ? 'AUTO ' : ''}${targetRatio}`;
+    }
+
+    // Sync canvas dimensions after layout transition
+    syncCanvasDimensions();
+    setTimeout(syncCanvasDimensions, 100);
+    setTimeout(syncCanvasDimensions, 350);
+  }
+
+  function toggleAspectMode() {
+    const modes = ['auto', '16:9', '9:16'];
+    const nextIdx = (modes.indexOf(currentAspectMode) + 1) % modes.length;
+    applyAspectMode(modes[nextIdx]);
+  }
+
+  function applyFitMode(mode, save = true) {
+    currentFitMode = mode;
+    if (save) localStorage.setItem('ceova_fit_mode', mode);
+
+    if (currentFitMode === 'cover') {
+      remoteVideo.classList.add('fit-cover');
+      fallbackImgFeed.classList.add('fit-cover');
+      if (fitBtnText) fitBtnText.textContent = 'Fill';
+      btnFitToggle?.classList.add('btn-active');
+    } else {
+      remoteVideo.classList.remove('fit-cover');
+      fallbackImgFeed.classList.remove('fit-cover');
+      if (fitBtnText) fitBtnText.textContent = 'Fit';
+      btnFitToggle?.classList.remove('btn-active');
+    }
+    syncCanvasDimensions();
+  }
+
+  function toggleFitMode() {
+    applyFitMode(currentFitMode === 'contain' ? 'cover' : 'contain');
+  }
+
+  function applyRotation(deg, save = true) {
+    currentRotation = deg % 360;
+    if (save) localStorage.setItem('ceova_rotation', String(currentRotation));
+
+    [remoteVideo, fallbackImgFeed].forEach(el => {
+      el.classList.remove('rotate-90', 'rotate-180', 'rotate-270');
+      if (currentRotation === 90) el.classList.add('rotate-90');
+      else if (currentRotation === 180) el.classList.add('rotate-180');
+      else if (currentRotation === 270) el.classList.add('rotate-270');
+    });
+
+    if (rotateBtnText) {
+      rotateBtnText.textContent = `${currentRotation}°`;
+    }
+    if (btnRotateToggle) {
+      btnRotateToggle.classList.toggle('btn-active', currentRotation !== 0);
+    }
+    syncCanvasDimensions();
+  }
+
+  function toggleRotation() {
+    applyRotation((currentRotation + 90) % 360);
+  }
+
+  function handleVideoDimensionUpdate() {
+    const vW = remoteVideo.videoWidth;
+    const vH = remoteVideo.videoHeight;
+    if (vW > 0 && vH > 0) {
+      resMeter.textContent = `${vW} x ${vH}`;
+      if (currentAspectMode === 'auto') {
+        const streamRatio = vH > vW ? '9:16' : '16:9';
+        if (lastAutoDetectedAspect !== streamRatio) {
+          applyAspectMode('auto', false);
+        }
+      }
+    }
+  }
+
+  if (btnAspectToggle) btnAspectToggle.addEventListener('click', toggleAspectMode);
+  if (btnFitToggle) btnFitToggle.addEventListener('click', toggleFitMode);
+  if (btnRotateToggle) btnRotateToggle.addEventListener('click', toggleRotation);
+
+  remoteVideo.addEventListener('loadedmetadata', handleVideoDimensionUpdate);
+  remoteVideo.addEventListener('resize', handleVideoDimensionUpdate);
+
+  if (fallbackImgFeed) {
+    fallbackImgFeed.addEventListener('load', () => {
+      if (remoteVideo.style.display === 'none' || !remoteVideo.srcObject) {
+        if (currentAspectMode === 'auto') {
+          const streamRatio = fallbackImgFeed.naturalHeight > fallbackImgFeed.naturalWidth ? '9:16' : '16:9';
+          if (lastAutoDetectedAspect !== streamRatio) {
+            applyAspectMode('auto', false);
+          }
+        }
+      }
+    });
+  }
+
+  window.addEventListener('resize', () => {
+    syncCanvasDimensions();
+  });
+
+  // ==========================================================================
+  // STAFF / CUSTOMER / VISITOR RECOGNITION ENGINE & LIVE DASHBOARD HUD
+  // ==========================================================================
+
+  const recognitionCropCanvas = document.createElement('canvas');
+  const recognitionCropCtx = recognitionCropCanvas.getContext('2d');
+  let isRecognitionInferring = false;
+  let lastRecognitionTime = 0;
+
+  // UI Elements for Role Summary
+  const summaryStaffCount = document.getElementById('summaryStaffCount');
+  const summaryStaffMembers = document.getElementById('summaryStaffMembers');
+  const summaryUnknownCount = document.getElementById('summaryUnknownCount');
+  const summaryCustomerCount = document.getElementById('summaryCustomerCount');
+  const summaryVisitorCount = document.getElementById('summaryVisitorCount');
+  const summaryDeliveryCount = document.getElementById('summaryDeliveryCount');
+  const summarySecurityCount = document.getElementById('summarySecurityCount');
+
+  // UI Elements for Live People Table
+  const livePeopleContainer = document.getElementById('livePeopleContainer');
+  const emptyPeopleState = document.getElementById('emptyPeopleState');
+  const livePeopleTable = document.getElementById('livePeopleTable');
+  const livePeopleTbody = document.getElementById('livePeopleTbody');
+  const livePeopleCountBadge = document.getElementById('livePeopleCountBadge');
+
+  // UI Elements for Staff Admin Modal
+  const btnOpenStaffModal = document.getElementById('btnOpenStaffModal');
+  const btnCloseStaffModal = document.getElementById('btnCloseStaffModal');
+  const staffModal = document.getElementById('staffModal');
+  const tabBtnEnroll = document.getElementById('tabBtnEnroll');
+  const tabBtnStaffList = document.getElementById('tabBtnStaffList');
+  const tabBtnMemory = document.getElementById('tabBtnMemory');
+  const tabBtnHardware = document.getElementById('tabBtnHardware');
+  const paneEnroll = document.getElementById('paneEnroll');
+  const paneStaffList = document.getElementById('paneStaffList');
+  const paneMemory = document.getElementById('paneMemory');
+  const paneHardware = document.getElementById('paneHardware');
+
+  const formEnrollStaff = document.getElementById('formEnrollStaff');
+  const btnEnrollCancel = document.getElementById('btnEnrollCancel');
+  const enrollFeedback = document.getElementById('enrollFeedback');
+
+  const cardFrontPhoto = document.getElementById('cardFrontPhoto');
+  const fileFrontPhoto = document.getElementById('fileFrontPhoto');
+  const prevFrontPhoto = document.getElementById('prevFrontPhoto');
+  const phFrontPhoto = document.getElementById('phFrontPhoto');
+
+  const cardSidePhoto = document.getElementById('cardSidePhoto');
+  const fileSidePhoto = document.getElementById('fileSidePhoto');
+  const prevSidePhoto = document.getElementById('prevSidePhoto');
+  const phSidePhoto = document.getElementById('phSidePhoto');
+
+  const cardBackPhoto = document.getElementById('cardBackPhoto');
+  const fileBackPhoto = document.getElementById('fileBackPhoto');
+  const prevBackPhoto = document.getElementById('prevBackPhoto');
+  const phBackPhoto = document.getElementById('phBackPhoto');
+
+  const checkEnableFace = document.getElementById('checkEnableFace');
+  const tableStaffList = document.getElementById('tableStaffList');
+  const tbodyStaffList = document.getElementById('tbodyStaffList');
+  const staffListCountBadge = document.getElementById('staffListCountBadge');
+  const btnRefreshStaffList = document.getElementById('btnRefreshStaffList');
+
+  // Stored Base64 Photos for Enrollment
+  let enrolledPhotos = {
+    frontImage: null,
+    sideImage: null,
+    backImage: null
+  };
+
+  /**
+   * Process active human tracks through server recognition pipeline
+   */
+  async function processTracksRecognition(activeTracks, sW, sH, wallClockNow) {
+    if (isRecognitionInferring || !activeTracks || activeTracks.length === 0) return;
+    if (wallClockNow - lastRecognitionTime < 700) return; // Throttle to conserve bandwidth & GPU
+
+    // Find first track that needs recognition (new or not updated in > 1500ms)
+    const candidate = activeTracks.find(t => (
+      !t.lastRecognizedTime || (wallClockNow - t.lastRecognizedTime > 1500)
+    ));
+
+    if (!candidate) return;
+
+    candidate.lastRecognizedTime = wallClockNow;
+    lastRecognitionTime = wallClockNow;
+
+    const cropW = Math.max(32, Math.min(sW, Math.round(candidate.width)));
+    const cropH = Math.max(64, Math.min(sH, Math.round(candidate.height)));
+    const cropX = Math.max(0, Math.min(sW - cropW, Math.round(candidate.x)));
+    const cropY = Math.max(0, Math.min(sH - cropH, Math.round(candidate.y)));
+
+    if (recognitionCropCanvas.width !== cropW || recognitionCropCanvas.height !== cropH) {
+      recognitionCropCanvas.width = cropW;
+      recognitionCropCanvas.height = cropH;
+    }
+
+    try {
+      const sourceEl = isVideoMode ? remoteVideo : fallbackImgFeed;
+      if (sourceEl) {
+        recognitionCropCtx.drawImage(sourceEl, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+      } else {
+        recognitionCropCtx.drawImage(aiBufferCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+      }
+      const dataUrl = recognitionCropCanvas.toDataURL('image/jpeg', 0.85);
+
+      isRecognitionInferring = true;
+      const resp = await fetch('/api/vision/process-track', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          cameraId: activeRoomId || 'CAM-01',
+          localTrackId: candidate.id,
+          cropImage: dataUrl,
+          bbox: [candidate.x, candidate.y, candidate.width, candidate.height],
+          dwellMs: candidate.dwellMs || 0
+        })
+      });
+
+      if (resp.ok) {
+        const result = await resp.json();
+        if (result.processed) {
+          candidate.globalTrackId = result.globalTrackId;
+          candidate.roleType = result.role;
+          candidate.assignedRole = (result.role === 'STAFF' && result.staffId)
+            ? `STAFF — ${result.staffId}`
+            : result.role;
+          candidate.roleConfidence = result.confidence;
+          candidate.personName = result.name;
+          candidate.isRecognized = Boolean(result.isRecognized);
+          candidate.matchScore = result.matchScore;
+          candidate.visitCount = result.visitCount;
+          candidate.thumbnail = result.thumbnail || dataUrl;
+
+          updateLivePeopleTableUI();
+          updateRoleSummaryCounts();
+        }
+      }
+    } catch (err) {
+      // Ignore transient network errors
+    } finally {
+      isRecognitionInferring = false;
+    }
+  }
+
+  /**
+   * Handle real-time structured identity events from WebSocket
+   */
+  function handleLiveIdentityEvent(event) {
+    if (!event) return;
+
+    let icon = '👤';
+    let title = event.event_type.toUpperCase().replace('_', ' ');
+
+    if (event.role === 'STAFF') {
+      icon = '💼';
+      title = `STAFF RECOGNIZED: ${event.staff_id || 'STAFF'}`;
+    } else if (event.role === 'SECURITY') {
+      icon = '🛡️';
+      title = `SECURITY ON DUTY: ${event.staff_id || 'GUARD'}`;
+    } else if (event.role === 'CUSTOMER') {
+      icon = '🛒';
+      title = `CUSTOMER DETECTED [${event.global_track_id}]`;
+    } else if (event.role === 'DELIVERY') {
+      icon = '📦';
+      title = `DELIVERY ARRIVAL [${event.camera_id}]`;
+    } else if (event.role === 'UNKNOWN') {
+      icon = '❓';
+      title = `UNVERIFIED PERSON [${event.global_track_id}]`;
+    }
+
+    const confText = `Confidence: ${(event.confidence * 100).toFixed(0)}% • Cam: ${event.camera_id}`;
+    addLogEvent('human', `${icon} ${title}`, confText);
+
+    // Refresh live summary
+    fetchLivePeopleSummary();
+  }
+
+  /**
+   * Update Live People Table in the side panel
+   */
+  function updateLivePeopleTableUI() {
+    if (!livePeopleTbody || !humanTracker) return;
+
+    const liveTracks = humanTracker.getLiveTracks();
+    if (!liveTracks || liveTracks.length === 0) {
+      if (emptyPeopleState) emptyPeopleState.style.display = 'block';
+      if (livePeopleTable) livePeopleTable.style.display = 'none';
+      if (livePeopleCountBadge) livePeopleCountBadge.textContent = '0';
+      return;
+    }
+
+    if (emptyPeopleState) emptyPeopleState.style.display = 'none';
+    if (livePeopleTable) livePeopleTable.style.display = 'table';
+    if (livePeopleCountBadge) livePeopleCountBadge.textContent = String(liveTracks.length);
+
+    livePeopleTbody.innerHTML = '';
+
+    liveTracks.forEach((t) => {
+      const tr = document.createElement('tr');
+      const role = t.roleType || 'UNKNOWN';
+      const conf = Math.round((t.roleConfidence || t.score) * 100);
+      const gid = t.globalTrackId || `T#${t.id}`;
+      const roleText = t.assignedRole || 'UNKNOWN';
+
+      let badgeClass = 'role-unknown';
+      if (role === 'STAFF') badgeClass = 'role-staff';
+      else if (role === 'CUSTOMER') badgeClass = 'role-customer';
+      else if (role === 'VISITOR') badgeClass = 'role-visitor';
+      else if (role === 'DELIVERY') badgeClass = 'role-delivery';
+      else if (role === 'SECURITY') badgeClass = 'role-security';
+
+      const thumbHtml = t.thumbnail
+        ? `<img src="${t.thumbnail}" class="live-table-thumb" alt="Human" onerror="this.style.display='none'"/>`
+        : `<div class="live-table-thumb-placeholder">👤</div>`;
+
+      const personDisplay = t.personName
+        ? `<strong style="color:var(--accent-cyan); font-size:0.82rem;">${t.personName}</strong><div style="font-size:0.68rem; color:#888;">${gid}</div>`
+        : `<strong style="color:#fff; font-size:0.82rem;">${gid}</strong>`;
+
+      const visitsCount = t.visitCount ? `V#${t.visitCount}` : 'V#1';
+
+      tr.innerHTML = `
+        <td style="width:42px; padding:4px 6px;">${thumbHtml}</td>
+        <td>${personDisplay}</td>
+        <td><span class="role-badge ${badgeClass}">${roleText}</span></td>
+        <td>${activeRoomId || 'CAM-01'}</td>
+        <td><span style="color:var(--accent-cyan); font-weight:600;">${conf}%</span></td>
+        <td><span class="visit-badge">${visitsCount}</span></td>
+      `;
+      livePeopleTbody.appendChild(tr);
+    });
+  }
+
+  /**
+   * Update top Role Summary Bar from active tracks and server poll
+   */
+  function updateRoleSummaryCounts() {
+    if (!humanTracker) return;
+
+    const tracks = humanTracker.getLiveTracks();
+    const counts = { STAFF: 0, CUSTOMER: 0, VISITOR: 0, DELIVERY: 0, SECURITY: 0, UNKNOWN: 0 };
+    const staffIds = [];
+
+    tracks.forEach((t) => {
+      const role = t.roleType || 'UNKNOWN';
+      counts[role] = (counts[role] || 0) + 1;
+      if (role === 'STAFF' && t.assignedRole) {
+        const parts = t.assignedRole.split('—');
+        const empId = parts[1] ? parts[1].trim() : 'STAFF';
+        if (!staffIds.includes(empId)) staffIds.push(empId);
+      }
+    });
+
+    if (summaryStaffCount) summaryStaffCount.textContent = String(counts.STAFF);
+    if (summaryStaffMembers) {
+      summaryStaffMembers.textContent = staffIds.length > 0
+        ? staffIds.join(', ')
+        : 'None currently detected';
+    }
+    if (summaryUnknownCount) summaryUnknownCount.textContent = String(counts.UNKNOWN);
+    if (summaryCustomerCount) summaryCustomerCount.textContent = String(counts.CUSTOMER);
+    if (summaryVisitorCount) summaryVisitorCount.textContent = String(counts.VISITOR);
+    if (summaryDeliveryCount) summaryDeliveryCount.textContent = String(counts.DELIVERY);
+    if (summarySecurityCount) summarySecurityCount.textContent = String(counts.SECURITY);
+  }
+
+  /**
+   * Fetch live summary from server (ensures multi-camera cross synchronization)
+   */
+  async function fetchLivePeopleSummary() {
+    try {
+      const res = await fetch('/api/people/live');
+      if (!res.ok) return;
+      const data = await res.json();
+      const s = data.summary;
+
+      if (summaryStaffCount && s.staffCount !== undefined) {
+        summaryStaffCount.textContent = String(s.staffCount);
+      }
+      if (summaryStaffMembers && s.staffMembers) {
+        summaryStaffMembers.textContent = s.staffMembers.length > 0
+          ? s.staffMembers.join(', ')
+          : 'None currently detected';
+      }
+      if (summaryUnknownCount && s.unknownCount !== undefined) {
+        summaryUnknownCount.textContent = String(s.unknownCount);
+      }
+      if (summaryCustomerCount && s.customerCount !== undefined) {
+        summaryCustomerCount.textContent = String(s.customerCount);
+      }
+      if (summaryVisitorCount && s.visitorCount !== undefined) {
+        summaryVisitorCount.textContent = String(s.visitorCount);
+      }
+      if (summaryDeliveryCount && s.deliveryCount !== undefined) {
+        summaryDeliveryCount.textContent = String(s.deliveryCount);
+      }
+      if (summarySecurityCount && s.securityCount !== undefined) {
+        summarySecurityCount.textContent = String(s.securityCount);
+      }
+    } catch (e) {}
+  }
+
+  // Poll server live status every 4 seconds
+  setInterval(fetchLivePeopleSummary, 4000);
+
+  // -------------------------------------------------------------
+  // Staff Admin Modal & Enrollment Controller
+  // -------------------------------------------------------------
+
+  if (btnOpenStaffModal && staffModal) {
+    btnOpenStaffModal.addEventListener('click', () => {
+      staffModal.classList.remove('hidden');
+      loadStaffList();
+      loadHardwareDiagnostics();
+      loadSystemConfig();
+    });
+  }
+
+  if (btnCloseStaffModal && staffModal) {
+    btnCloseStaffModal.addEventListener('click', () => {
+      staffModal.classList.add('hidden');
+    });
+  }
+
+  if (btnEnrollCancel && staffModal) {
+    btnEnrollCancel.addEventListener('click', () => {
+      staffModal.classList.add('hidden');
+    });
+  }
+
+  // Tab switching
+  function switchTab(tab) {
+    [tabBtnEnroll, tabBtnStaffList, tabBtnMemory, tabBtnHardware].forEach(b => b?.classList.remove('active'));
+    [paneEnroll, paneStaffList, paneMemory, paneHardware].forEach(p => p?.classList.remove('active'));
+
+    if (tab === 'enroll') {
+      tabBtnEnroll?.classList.add('active');
+      paneEnroll?.classList.add('active');
+    } else if (tab === 'staffList') {
+      tabBtnStaffList?.classList.add('active');
+      paneStaffList?.classList.add('active');
+      loadStaffList();
+    } else if (tab === 'memory') {
+      tabBtnMemory?.classList.add('active');
+      paneMemory?.classList.add('active');
+      loadKnownGallery();
+    } else if (tab === 'hardware') {
+      tabBtnHardware?.classList.add('active');
+      paneHardware?.classList.add('active');
+      loadHardwareDiagnostics();
+    }
+  }
+
+  if (tabBtnEnroll) tabBtnEnroll.addEventListener('click', () => switchTab('enroll'));
+  if (tabBtnStaffList) tabBtnStaffList.addEventListener('click', () => switchTab('staffList'));
+  if (tabBtnMemory) tabBtnMemory.addEventListener('click', () => switchTab('memory'));
+  if (tabBtnHardware) tabBtnHardware.addEventListener('click', () => switchTab('hardware'));
+
+  // Photo Upload Helpers
+  function setupPhotoUpload(card, input, preview, placeholder, photoKey) {
+    if (!card || !input) return;
+
+    card.addEventListener('click', () => input.click());
+
+    input.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+
+      if (!['image/jpeg', 'image/png'].includes(file.type)) {
+        alert('Unsupported file format. Please upload a JPEG or PNG image.');
+        return;
+      }
+
+      if (file.size > 10 * 1024 * 1024) {
+        alert(`File size ${(file.size / 1024 / 1024).toFixed(1)}MB exceeds 10MB limit.`);
+        return;
+      }
+
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        enrolledPhotos[photoKey] = evt.target.result;
+        if (preview && placeholder) {
+          preview.src = evt.target.result;
+          preview.style.display = 'block';
+          placeholder.style.display = 'none';
+          card.classList.add('has-photo');
+        }
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  setupPhotoUpload(cardFrontPhoto, fileFrontPhoto, prevFrontPhoto, phFrontPhoto, 'frontImage');
+  setupPhotoUpload(cardSidePhoto, fileSidePhoto, prevSidePhoto, phSidePhoto, 'sideImage');
+  setupPhotoUpload(cardBackPhoto, fileBackPhoto, prevBackPhoto, phBackPhoto, 'backImage');
+
+  // Submit Staff Enrollment Form
+  if (formEnrollStaff) {
+    formEnrollStaff.addEventListener('submit', async (e) => {
+      e.preventDefault();
+
+      if (!enrolledPhotos.frontImage) {
+        alert('Please upload a mandatory front full-body reference image.');
+        return;
+      }
+
+      const fullName = document.getElementById('enrollFullName').value.trim();
+      const employeeId = document.getElementById('enrollEmployeeId').value.trim();
+      const role = document.getElementById('enrollRole').value;
+      const department = document.getElementById('enrollDepartment').value.trim();
+      const scheduleId = document.getElementById('enrollSchedule').value;
+      const zonesSelection = document.getElementById('enrollZones').value;
+
+      let authorizedZones = ['ZONE_SALES_FLOOR'];
+      if (zonesSelection === 'ALL') {
+        authorizedZones = ['ZONE_SALES_FLOOR', 'ZONE_STOCK_ROOM', 'ZONE_LOADING_BAY'];
+      } else if (zonesSelection === 'RESTRICTED') {
+        authorizedZones = ['ZONE_STOCK_ROOM', 'ZONE_LOADING_BAY'];
+      }
+
+      const btnSubmit = document.getElementById('btnSubmitEnroll');
+      if (btnSubmit) {
+        btnSubmit.disabled = true;
+        btnSubmit.textContent = 'Validating & Enrolling...';
+      }
+
+      if (enrollFeedback) {
+        enrollFeedback.style.display = 'block';
+        enrollFeedback.style.color = 'var(--accent-amber)';
+        enrollFeedback.textContent = 'Processing photos, checking quality & extracting Re-ID features...';
+      }
+
+      try {
+        const resp = await fetch('/api/staff/enroll', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            fullName,
+            employeeId,
+            role,
+            department,
+            scheduleId,
+            authorizedZones,
+            photos: enrolledPhotos
+          })
+        });
+
+        const data = await resp.json();
+
+        if (resp.ok && data.success) {
+          enrollFeedback.style.color = 'var(--accent-green)';
+          enrollFeedback.textContent = `✅ Successfully enrolled ${data.profile.fullName} (${data.profile.employeeId})! Body Re-ID features generated and encrypted.`;
+
+          // Reset form
+          setTimeout(() => {
+            formEnrollStaff.reset();
+            enrolledPhotos = { frontImage: null, sideImage: null, backImage: null };
+            [prevFrontPhoto, prevSidePhoto, prevBackPhoto].forEach(p => { if (p) p.style.display = 'none'; });
+            [phFrontPhoto, phSidePhoto, phBackPhoto].forEach(ph => { if (ph) ph.style.display = 'block'; });
+            [cardFrontPhoto, cardSidePhoto, cardBackPhoto].forEach(c => { if (c) c.classList.remove('has-photo'); });
+            switchTab('staffList');
+          }, 1500);
+        } else {
+          enrollFeedback.style.color = '#ef4444';
+          enrollFeedback.textContent = `❌ Enrollment failed: ${data.error || 'Unknown error'}`;
+        }
+      } catch (err) {
+        enrollFeedback.style.color = '#ef4444';
+        enrollFeedback.textContent = `❌ Network error: ${err.message}`;
+      } finally {
+        if (btnSubmit) {
+          btnSubmit.disabled = false;
+          btnSubmit.textContent = 'Enroll Staff Member';
+        }
+      }
+    });
+  }
+
+  // Enrolled Staff List
+  async function loadStaffList() {
+    if (!tbodyStaffList) return;
+    try {
+      const res = await fetch('/api/staff');
+      if (!res.ok) return;
+      const data = await res.json();
+      const list = data.staff || [];
+
+      if (staffListCountBadge) staffListCountBadge.textContent = String(list.length);
+      tbodyStaffList.innerHTML = '';
+
+      if (list.length === 0) {
+        tbodyStaffList.innerHTML = `<tr><td colspan="6" style="text-align:center; color:#888; padding:1.5rem;">No staff members currently enrolled. Use the "Add Staff" tab to enroll.</td></tr>`;
+        return;
+      }
+
+      list.forEach(s => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><strong style="color:var(--accent-cyan);">${s.employeeId}</strong></td>
+          <td>${s.fullName}</td>
+          <td><span class="role-badge role-staff">${s.role}</span></td>
+          <td>${s.department || '--'}</td>
+          <td>${s.scheduleId}</td>
+          <td>
+            <button class="btn btn-secondary btn-delete-staff" data-id="${s.id}" style="padding:2px 8px; font-size:0.7rem; color:#ef4444; border-color:rgba(239,68,68,0.3);">
+              Delete
+            </button>
+          </td>
+        `;
+        tbodyStaffList.appendChild(tr);
+      });
+
+      // Attach delete button listeners
+      tbodyStaffList.querySelectorAll('.btn-delete-staff').forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+          const id = e.target.getAttribute('data-id');
+          if (!confirm(`Are you sure you want to delete this staff profile? Biometric features will be permanently purged.`)) return;
+
+          try {
+            const delRes = await fetch(`/api/staff/${id}`, { method: 'DELETE' });
+            if (delRes.ok) {
+              loadStaffList();
+              fetchLivePeopleSummary();
+            } else {
+              alert('Failed to delete staff member');
+            }
+          } catch (err) {
+            alert('Network error deleting staff member');
+          }
+        });
+      });
+    } catch (e) {}
+  }
+
+  if (btnRefreshStaffList) btnRefreshStaffList.addEventListener('click', loadStaffList);
+
+  // Hardware Diagnostics & Recommendations
+  async function loadHardwareDiagnostics() {
+    try {
+      const res = await fetch('/api/hardware/status');
+      if (!res.ok) return;
+      const data = await res.json();
+      const hw = data.hardware;
+      const cfg = data.configuration;
+
+      const setEl = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+
+      setEl('diagCpuModel', hw.cpuModel);
+      setEl('diagCpuCores', `${hw.cpuCores} Cores`);
+      setEl('diagRamTotal', `${hw.totalRamGb} GB`);
+      setEl('diagRamFree', `${hw.freeRamGb} GB`);
+      setEl('diagGpu', `${hw.gpu}${hw.vramMb > 0 ? ` (${hw.vramMb} MB VRAM)` : ''}`);
+      setEl('diagCuda', hw.cudaAvailable ? 'ENABLED (NVIDIA CUDA)' : 'FALLBACK (Metal/CPU)');
+
+      setEl('diagMode', cfg.processingMode);
+      setEl('diagFps', `${cfg.detectionFps} FPS`);
+      setEl('diagReidInterval', `${cfg.reidIntervalMs} ms`);
+      setEl('diagFaceInterval', `${cfg.faceIntervalMs} ms`);
+      setEl('diagMaxPeople', `${cfg.maxTrackedPeople} Persons`);
+    } catch (e) {}
+  }
+
+  // Load and Toggle Face Recognition Configuration
+  async function loadSystemConfig() {
+    try {
+      const res = await fetch('/api/identity/status');
+      if (!res.ok) return;
+      const data = await res.json();
+      if (checkEnableFace) {
+        checkEnableFace.checked = Boolean(data.faceRecognitionEnabled);
+      }
+    } catch (e) {}
+  }
+
+  if (checkEnableFace) {
+    checkEnableFace.addEventListener('change', async (e) => {
+      const enabled = e.target.checked;
+      try {
+        await fetch('/api/identity/config', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ faceRecognitionEnabled: enabled })
+        });
+      } catch (err) {
+        alert('Failed to update face recognition setting');
+      }
+    });
+  }
+
+  // -------------------------------------------------------------
+  // Body Recognition Memory Gallery Controller
+  // -------------------------------------------------------------
+
+  function escapeHtml(str) {
+    if (!str) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
+  const memoryGalleryGrid = document.getElementById('memoryGalleryGrid');
+  const memorySearchInput = document.getElementById('memorySearchInput');
+  const memoryFilterRole = document.getElementById('memoryFilterRole');
+  const memoryCountBadge = document.getElementById('memoryCountBadge');
+  const btnRefreshMemory = document.getElementById('btnRefreshMemory');
+
+  async function loadKnownGallery() {
+    if (!memoryGalleryGrid) return;
+
+    try {
+      const q = (memorySearchInput?.value || '').trim();
+      const role = (memoryFilterRole?.value || 'ALL').trim();
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      if (role && role !== 'ALL') params.set('role', role);
+
+      const res = await fetch(`/api/persons?${params.toString()}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+
+      const total = data.total !== undefined ? data.total : (data.persons ? data.persons.length : 0);
+      if (memoryCountBadge) memoryCountBadge.textContent = String(total);
+      renderKnownGallery(data.persons || []);
+    } catch (err) {
+      console.error('Failed to load memory gallery:', err);
+      memoryGalleryGrid.innerHTML = `<div class="empty-state" style="grid-column: 1 / -1; padding: 2rem; color: #f87171;">Failed to load remembered persons: ${err.message}</div>`;
+    }
+  }
+
+  function renderKnownGallery(persons) {
+    if (!memoryGalleryGrid) return;
+    memoryGalleryGrid.innerHTML = '';
+
+    if (!persons || persons.length === 0) {
+      memoryGalleryGrid.innerHTML = `
+        <div class="empty-state" style="grid-column: 1 / -1; padding: 2.5rem 1rem; text-align: center; color: var(--text-muted);">
+          <div style="font-size: 2.2rem; margin-bottom: 0.8rem;">🧠</div>
+          <strong style="color: #fff; font-size: 0.95rem;">No Remembered Humans Found</strong>
+          <p style="margin-top: 0.4rem; font-size: 0.8rem; max-width: 380px; margin-left: auto; margin-right: auto;">
+            As people appear in the CCTV camera feed, CEOVA Vision AI automatically builds 128-d body signatures and remembers them across visits.
+          </p>
+        </div>
+      `;
+      return;
+    }
+
+    persons.forEach(p => {
+      const card = document.createElement('div');
+      card.className = 'person-card';
+      card.id = `person-card-${p.id}`;
+
+      const roleClass = (p.role || 'UNKNOWN').toLowerCase();
+      const firstSeenStr = p.first_seen_at ? new Date(p.first_seen_at).toLocaleString() : '--';
+      const lastSeenStr = p.last_seen_at ? new Date(p.last_seen_at).toLocaleTimeString() : '--';
+      const dwellFormatted = formatDwellTime(p.total_dwell_ms || 0);
+
+      const thumbImg = p.thumbnail
+        ? `<img src="${p.thumbnail}" class="person-card-thumb" alt="${escapeHtml(p.name)}" />`
+        : `<div class="person-card-thumb-placeholder">👤</div>`;
+
+      card.innerHTML = `
+        <div class="person-card-thumb-wrapper">
+          ${thumbImg}
+          <span class="person-role-tag ${roleClass}">${p.role}</span>
+          <span class="person-visits-badge">Visits: <strong>${p.visit_count || 1}</strong></span>
+        </div>
+        <div class="person-card-body">
+          <div class="person-name-row">
+            <input type="text" class="form-control person-name-input" value="${escapeHtml(p.name || '')}" placeholder="Name this human..." data-id="${p.id}" />
+            <button class="btn btn-secondary btn-save-person" data-id="${p.id}" title="Save Name">💾</button>
+          </div>
+          <div class="person-meta-grid">
+            <div><span class="meta-label">ID:</span> <strong style="color:var(--accent-cyan);">#${p.id}</strong></div>
+            <div><span class="meta-label">Dwell:</span> <strong>${dwellFormatted}</strong></div>
+            <div style="grid-column: 1 / -1;"><span class="meta-label">First Seen:</span> ${firstSeenStr}</div>
+            <div style="grid-column: 1 / -1;"><span class="meta-label">Last Sighting:</span> ${lastSeenStr}</div>
+          </div>
+          <div class="person-card-actions">
+            <button class="btn btn-danger btn-delete-person" data-id="${p.id}" style="font-size:0.72rem; padding: 4px 10px; width: 100%;">
+              🗑️ Forget Person
+            </button>
+          </div>
+        </div>
+      `;
+
+      // Save button event
+      const saveBtn = card.querySelector('.btn-save-person');
+      const nameInput = card.querySelector('.person-name-input');
+      const doSave = async () => {
+        const newName = nameInput.value.trim();
+        if (!newName) return;
+        try {
+          saveBtn.textContent = '⏳';
+          const res = await fetch(`/api/persons/${p.id}`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: newName })
+          });
+          if (res.ok) {
+            saveBtn.textContent = '✅';
+            setTimeout(() => { saveBtn.textContent = '💾'; }, 1500);
+          } else {
+            saveBtn.textContent = '❌';
+            setTimeout(() => { saveBtn.textContent = '💾'; }, 1500);
+          }
+        } catch (_err) {
+          saveBtn.textContent = '❌';
+          setTimeout(() => { saveBtn.textContent = '💾'; }, 1500);
+        }
+      };
+
+      saveBtn?.addEventListener('click', doSave);
+      nameInput?.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          doSave();
+        }
+      });
+
+      // Delete button event
+      const delBtn = card.querySelector('.btn-delete-person');
+      delBtn?.addEventListener('click', async () => {
+        if (!confirm(`Are you sure you want to forget "${p.name || 'Human #' + p.id}" from persistent memory?`)) return;
+        try {
+          delBtn.disabled = true;
+          delBtn.textContent = 'Deleting...';
+          const res = await fetch(`/api/persons/${p.id}`, { method: 'DELETE' });
+          if (res.ok) {
+            card.remove();
+            const curr = parseInt(memoryCountBadge?.textContent || '1', 10);
+            if (memoryCountBadge) memoryCountBadge.textContent = String(Math.max(0, curr - 1));
+          } else {
+            alert('Failed to delete person from memory');
+            delBtn.disabled = false;
+            delBtn.textContent = '🗑️ Forget Person';
+          }
+        } catch (_err) {
+          delBtn.disabled = false;
+          delBtn.textContent = '🗑️ Forget Person';
+        }
+      });
+
+      memoryGalleryGrid.appendChild(card);
+    });
+  }
+
+  // Quick open gallery button from control bar
+  if (btnOpenMemoryGallery && staffModal) {
+    btnOpenMemoryGallery.addEventListener('click', () => {
+      staffModal.classList.remove('hidden');
+      switchTab('memory');
+    });
+  }
+
+  if (btnRefreshMemory) {
+    btnRefreshMemory.addEventListener('click', () => loadKnownGallery());
+  }
+
+  if (memorySearchInput) {
+    let debounceTimer = null;
+    memorySearchInput.addEventListener('input', () => {
+      clearTimeout(debounceTimer);
+      debounceTimer = setTimeout(loadKnownGallery, 300);
+    });
+  }
+
+  if (memoryFilterRole) {
+    memoryFilterRole.addEventListener('change', () => loadKnownGallery());
+  }
+
+  // =========================================================
+  // PEOPLE COUNT RESPECT TO TIME (REAL-TIME TIMELINE GRAPH)
+  // =========================================================
+  const peopleCanvas = document.getElementById('peopleOccupancyCanvas');
+  const graphWrapper = document.getElementById('graphCanvasWrapper');
+  const graphTooltip = document.getElementById('graphTooltip');
+  const miniSparkline = document.getElementById('miniPeopleSparkline');
+  const miniSparklinePeak = document.getElementById('miniSparklinePeak');
+
+  const gMetricCurrent = document.getElementById('gMetricCurrent');
+  const gMetricCurrentSub = document.getElementById('gMetricCurrentSub');
+  const gMetricPeak = document.getElementById('gMetricPeak');
+  const gMetricPeakTime = document.getElementById('gMetricPeakTime');
+  const gMetricAvg = document.getElementById('gMetricAvg');
+  const gMetricTotal = document.getElementById('gMetricTotal');
+  const graphOccupancyDensity = document.getElementById('graphOccupancyDensity');
+  const graphDataPointCount = document.getElementById('graphDataPointCount');
+
+  const graphLiveStatus = document.getElementById('graphLiveStatus');
+  const graphLiveStatusText = document.getElementById('graphLiveStatusText');
+  const graphPulseDot = document.getElementById('graphPulseDot');
+
+  const chkSeriesTotal = document.getElementById('chkSeriesTotal');
+  const chkSeriesStaff = document.getElementById('chkSeriesStaff');
+  const chkSeriesVisitors = document.getElementById('chkSeriesVisitors');
+
+  const btnToggleSimulate = document.getElementById('btnToggleSimulate');
+  const btnPauseGraph = document.getElementById('btnPauseGraph');
+  const btnExportCsv = document.getElementById('btnExportCsv');
+  const btnExportGraphPng = document.getElementById('btnExportGraphPng');
+  const btnClearGraph = document.getElementById('btnClearGraph');
+
+  const TIMELINE_STORAGE_KEY = 'ceova_people_timeline_v2';
+  let peopleTimeline = [];
+  try {
+    const saved = localStorage.getItem(TIMELINE_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed)) {
+        const twoHoursAgo = Date.now() - 2 * 3600 * 1000;
+        peopleTimeline = parsed.filter(p => p && p.timestamp > twoHoursAgo);
+      }
+    }
+  } catch (_) {}
+
+  // Populate baseline 30s so the graph starts with a clean baseline
+  if (peopleTimeline.length === 0) {
+    const baseNow = Date.now();
+    for (let i = 30; i >= 0; i--) {
+      peopleTimeline.push({
+        timestamp: baseNow - (i * 1000),
+        totalCount: 0,
+        staffCount: 0,
+        visitorCount: 0,
+        cumulativeCount: 0
+      });
+    }
+  }
+
+  let selectedRange = 60; // 60, 300, 900, 3600, or 'all'
+  let isGraphPaused = false;
+  let pauseFreezeTime = null;
+  let isSimulating = false;
+  let simCycleStep = 0;
+  let simCounts = { total: 0, staff: 0, visitors: 0 };
+  let hoverState = null; // { mouseX, mouseY }
+
+  // Simulate Traffic Wave Generator
+  const simWaves = [
+    { total: 0, staff: 0, visitors: 0 },
+    { total: 1, staff: 1, visitors: 0 },
+    { total: 1, staff: 1, visitors: 0 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 3, staff: 1, visitors: 2 },
+    { total: 4, staff: 1, visitors: 3 }, // Peak surge
+    { total: 5, staff: 2, visitors: 3 }, // Maximum peak
+    { total: 4, staff: 2, visitors: 2 },
+    { total: 3, staff: 1, visitors: 2 },
+    { total: 2, staff: 1, visitors: 1 },
+    { total: 1, staff: 0, visitors: 1 },
+    { total: 0, staff: 0, visitors: 0 },
+    { total: 0, staff: 0, visitors: 0 }
+  ];
+
+  function tickSimulation() {
+    if (!isSimulating) return;
+    simCycleStep = (simCycleStep + 1) % simWaves.length;
+    simCounts = { ...simWaves[simCycleStep] };
+  }
+
+  // 1-Second Sampling Engine
+  function samplePeopleTimeData() {
+    const now = Date.now();
+    let total = 0;
+    let staff = 0;
+    let visitors = 0;
+    let cumulative = humanTracker ? humanTracker.totalUniqueCount : 0;
+
+    if (isSimulating) {
+      total = simCounts.total;
+      staff = simCounts.staff;
+      visitors = simCounts.visitors;
+      cumulative = Math.max(cumulative, 6);
+    } else if (humanTracker) {
+      const liveTracks = humanTracker.getLiveTracks(now);
+      total = liveTracks.length;
+      for (const t of liveTracks) {
+        if (t.assignedRole === 'STAFF') staff++;
+        else visitors++;
+      }
+      cumulative = humanTracker.totalUniqueCount;
+    }
+
+    const sample = {
+      timestamp: now,
+      totalCount: total,
+      staffCount: staff,
+      visitorCount: visitors,
+      cumulativeCount: cumulative
+    };
+
+    peopleTimeline.push(sample);
+
+    // Keep max 7200 points (2 hours of 1-sec data)
+    if (peopleTimeline.length > 7200) {
+      peopleTimeline.shift();
+    }
+
+    // Debounced persist to localStorage
+    if (peopleTimeline.length % 5 === 0) {
+      try {
+        localStorage.setItem(TIMELINE_STORAGE_KEY, JSON.stringify(peopleTimeline.slice(-600)));
+      } catch (_) {}
+    }
+
+    // Sync with backend API
+    if (peopleTimeline.length % 3 === 0) {
+      fetch('/api/people/timeline/sample', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(sample)
+      }).catch(() => {});
+    }
+
+    // Sync with Popular Times hourly aggregator (every 5 samples)
+    if (peopleTimeline.length % 5 === 0 && typeof recordLivePopularSample === 'function') {
+      recordLivePopularSample(total);
+    }
+
+    updateMetricsDisplay();
+  }
+
+  // Calculate & Update Metrics
+  function updateMetricsDisplay() {
+    if (peopleTimeline.length === 0) return;
+    const now = isGraphPaused && pauseFreezeTime ? pauseFreezeTime : Date.now();
+
+    // Determine current window points
+    let windowStart;
+    if (selectedRange === 'all') {
+      windowStart = peopleTimeline[0].timestamp;
+    } else {
+      windowStart = now - (selectedRange * 1000);
+    }
+
+    const windowPoints = peopleTimeline.filter(p => p.timestamp >= windowStart && p.timestamp <= now);
+    const pts = windowPoints.length > 0 ? windowPoints : peopleTimeline.slice(-30);
+
+    const latest = peopleTimeline[peopleTimeline.length - 1];
+    const current = latest ? latest.totalCount : 0;
+
+    let peak = 0;
+    let peakPt = null;
+    let sum = 0;
+
+    for (const p of pts) {
+      if (p.totalCount >= peak) {
+        peak = p.totalCount;
+        peakPt = p;
+      }
+      sum += p.totalCount;
+    }
+
+    const avg = pts.length > 0 ? (sum / pts.length).toFixed(1) : '0.0';
+    const totalUnique = humanTracker ? humanTracker.totalUniqueCount : (latest ? latest.cumulativeCount : 0);
+
+    if (gMetricCurrent) gMetricCurrent.textContent = String(current);
+    if (gMetricCurrentSub) {
+      gMetricCurrentSub.textContent = isSimulating ? 'simulated traffic' : (current === 1 ? '1 person in frame' : `${current} people in frame`);
+    }
+    if (gMetricPeak) gMetricPeak.textContent = String(peak);
+    if (gMetricPeakTime) {
+      gMetricPeakTime.textContent = peakPt ? new Date(peakPt.timestamp).toLocaleTimeString() : '--:--:--';
+    }
+    if (gMetricAvg) gMetricAvg.textContent = String(avg);
+    if (gMetricTotal) gMetricTotal.textContent = String(Math.max(totalUnique, peak));
+
+    if (graphDataPointCount) {
+      graphDataPointCount.textContent = `${peopleTimeline.length} points recorded (1s sample rate)`;
+    }
+
+    // Occupancy Density Badge
+    if (graphOccupancyDensity) {
+      graphOccupancyDensity.className = 'density-pill';
+      if (current === 0) {
+        graphOccupancyDensity.classList.add('density-vacant');
+        graphOccupancyDensity.textContent = 'STATUS: VACANT (0 PEOPLE)';
+      } else if (current <= 2) {
+        graphOccupancyDensity.classList.add('density-normal');
+        graphOccupancyDensity.textContent = `STATUS: NORMAL OCCUPANCY (${current} IN VIEW)`;
+      } else if (current <= 4) {
+        graphOccupancyDensity.classList.add('density-busy');
+        graphOccupancyDensity.textContent = `STATUS: MODERATE TRAFFIC (${current} IN VIEW)`;
+      } else {
+        graphOccupancyDensity.classList.add('density-surge');
+        graphOccupancyDensity.textContent = `STATUS: HIGH DENSITY SURGE (${current} IN VIEW)`;
+      }
+    }
+  }
+
+  // Draw Spline / Smooth Line Curve
+  function drawSmoothSeries(ctx, coords, strokeColor, fillColor = null, lineWidth = 2) {
+    if (!coords || coords.length === 0) return;
+
+    if (coords.length === 1) {
+      ctx.beginPath();
+      ctx.arc(coords[0].x, coords[0].y, 3, 0, Math.PI * 2);
+      ctx.fillStyle = strokeColor;
+      ctx.fill();
+      return;
+    }
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.moveTo(coords[0].x, coords[0].y);
+
+    for (let i = 0; i < coords.length - 1; i++) {
+      const p0 = coords[i === 0 ? i : i - 1];
+      const p1 = coords[i];
+      const p2 = coords[i + 1];
+      const p3 = coords[i + 2 < coords.length ? i + 2 : i + 1];
+
+      // Catmull-Rom to Cubic Bezier control points conversion
+      const cp1x = p1.x + (p2.x - p0.x) / 6;
+      const cp1y = p1.y + (p2.y - p0.y) / 6;
+      const cp2x = p2.x - (p3.x - p1.x) / 6;
+      const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+      ctx.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+    }
+
+    if (fillColor) {
+      ctx.save();
+      const fillPath = new Path2D();
+      fillPath.moveTo(coords[0].x, coords[0].y);
+
+      for (let i = 0; i < coords.length - 1; i++) {
+        const p0 = coords[i === 0 ? i : i - 1];
+        const p1 = coords[i];
+        const p2 = coords[i + 1];
+        const p3 = coords[i + 2 < coords.length ? i + 2 : i + 1];
+
+        const cp1x = p1.x + (p2.x - p0.x) / 6;
+        const cp1y = p1.y + (p2.y - p0.y) / 6;
+        const cp2x = p2.x - (p3.x - p1.x) / 6;
+        const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+        fillPath.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, p2.x, p2.y);
+      }
+
+      // Close path to bottom of chart
+      const bottomY = coords[coords.length - 1].bottomY;
+      fillPath.lineTo(coords[coords.length - 1].x, bottomY);
+      fillPath.lineTo(coords[0].x, bottomY);
+      fillPath.closePath();
+
+      ctx.fillStyle = fillColor;
+      ctx.fill(fillPath);
+      ctx.restore();
+    }
+
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = lineWidth;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.shadowColor = strokeColor;
+    ctx.shadowBlur = 6;
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  // Main Canvas Rendering Function
+  function renderPeopleGraph() {
+    if (!peopleCanvas || !graphWrapper) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = graphWrapper.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+
+    if (w <= 0 || h <= 0) return;
+
+    if (peopleCanvas.width !== Math.round(w * dpr) || peopleCanvas.height !== Math.round(h * dpr)) {
+      peopleCanvas.width = Math.round(w * dpr);
+      peopleCanvas.height = Math.round(h * dpr);
+    }
+
+    const ctx = peopleCanvas.getContext('2d');
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    const pad = { top: 25, right: 65, bottom: 35, left: 45 };
+    const pw = w - pad.left - pad.right;
+    const ph = h - pad.top - pad.bottom;
+
+    if (pw <= 0 || ph <= 0) {
+      ctx.restore();
+      return;
+    }
+
+    const now = isGraphPaused && pauseFreezeTime ? pauseFreezeTime : Date.now();
+    let leftTime;
+    if (selectedRange === 'all') {
+      leftTime = peopleTimeline.length > 0 ? peopleTimeline[0].timestamp : (now - 60000);
+      if (now - leftTime < 60000) leftTime = now - 60000;
+    } else {
+      leftTime = now - (selectedRange * 1000);
+    }
+    const rightTime = now;
+    const timeSpan = Math.max(10000, rightTime - leftTime);
+
+    // Filter points in visible window
+    const pts = peopleTimeline.filter(p => p.timestamp >= (leftTime - 2000) && p.timestamp <= (rightTime + 2000));
+
+    // Calculate maximum Y
+    let maxVal = 0;
+    let peakVal = 0;
+    let peakPt = null;
+    let sum = 0;
+
+    for (const p of pts) {
+      if (p.totalCount > maxVal) maxVal = p.totalCount;
+      if (p.totalCount > peakVal) {
+        peakVal = p.totalCount;
+        peakPt = p;
+      }
+      sum += p.totalCount;
+    }
+
+    const avgVal = pts.length > 0 ? sum / pts.length : 0;
+    const yMax = Math.max(5, Math.ceil(maxVal * 1.2));
+
+    const getX = t => pad.left + ((t - leftTime) / timeSpan) * pw;
+    const getY = v => pad.top + ph - (v / yMax) * ph;
+
+    // 1. Grid Background & Axes
+    ctx.lineWidth = 1;
+    ctx.font = '10px JetBrains Mono, monospace';
+
+    // Horizontal grid lines
+    const yStep = yMax <= 6 ? 1 : (yMax <= 12 ? 2 : Math.ceil(yMax / 6));
+    for (let y = 0; y <= yMax; y += yStep) {
+      const py = Math.round(getY(y)) + 0.5;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = y === 0 ? 'rgba(255, 255, 255, 0.18)' : 'rgba(255, 255, 255, 0.06)';
+      if (y !== 0) ctx.setLineDash([3, 4]);
+      ctx.moveTo(pad.left, py);
+      ctx.lineTo(pad.left + pw, py);
+      ctx.stroke();
+      ctx.restore();
+
+      // Y Label
+      ctx.fillStyle = y === 0 ? '#d4d4d8' : '#71717a';
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(y), pad.left - 10, py);
+    }
+
+    // Y Axis unit title
+    ctx.save();
+    ctx.fillStyle = '#71717a';
+    ctx.font = '9px JetBrains Mono, monospace';
+    ctx.textAlign = 'left';
+    ctx.fillText('PEOPLE', pad.left - 36, pad.top - 12);
+    ctx.restore();
+
+    // Vertical time grid lines
+    const numTicks = w > 600 ? 6 : 4;
+    for (let i = 0; i <= numTicks; i++) {
+      const tickTime = leftTime + (i / numTicks) * timeSpan;
+      const px = Math.round(getX(tickTime)) + 0.5;
+
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255, 255, 255, 0.05)';
+      ctx.setLineDash([2, 4]);
+      ctx.moveTo(px, pad.top);
+      ctx.lineTo(px, pad.top + ph);
+      ctx.stroke();
+      ctx.restore();
+
+      // Time label
+      const d = new Date(tickTime);
+      const timeStr = d.toTimeString().split(' ')[0];
+      ctx.fillStyle = '#71717a';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.fillText(timeStr, px, pad.top + ph + 8);
+    }
+
+    // 2. Reference Lines (Peak & Average)
+    if (peakVal > 0) {
+      const py = getY(peakVal);
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.55)';
+      ctx.setLineDash([4, 4]);
+      ctx.lineWidth = 1;
+      ctx.moveTo(pad.left, py);
+      ctx.lineTo(pad.left + pw, py);
+      ctx.stroke();
+
+      // Peak Badge on right margin
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(245, 158, 11, 0.18)';
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.5)';
+      ctx.beginPath();
+      ctx.roundRect(pad.left + pw + 4, py - 9, 56, 18, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#f59e0b';
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`PEAK: ${peakVal}`, pad.left + pw + 32, py);
+      ctx.restore();
+    }
+
+    if (avgVal > 0 && Math.abs(getY(avgVal) - getY(peakVal)) > 14) {
+      const ay = getY(avgVal);
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.5)';
+      ctx.setLineDash([3, 3]);
+      ctx.lineWidth = 1;
+      ctx.moveTo(pad.left, ay);
+      ctx.lineTo(pad.left + pw, ay);
+      ctx.stroke();
+
+      // Avg Badge on right margin
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.15)';
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.45)';
+      ctx.beginPath();
+      ctx.roundRect(pad.left + pw + 4, ay - 9, 56, 18, 4);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#38bdf8';
+      ctx.font = '9px JetBrains Mono, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`AVG: ${avgVal.toFixed(1)}`, pad.left + pw + 32, ay);
+      ctx.restore();
+    }
+
+    // 3. Prepare Series Coordinate Lists
+    const totalCoords = [];
+    const staffCoords = [];
+    const visitorCoords = [];
+
+    const bottomY = pad.top + ph;
+
+    for (const p of pts) {
+      const px = getX(p.timestamp);
+      totalCoords.push({ x: px, y: getY(p.totalCount), bottomY, raw: p });
+      staffCoords.push({ x: px, y: getY(p.staffCount), bottomY, raw: p });
+      visitorCoords.push({ x: px, y: getY(p.visitorCount), bottomY, raw: p });
+    }
+
+    // Clip rendering strictly to plot area
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(pad.left - 2, pad.top - 5, pw + 4, ph + 10);
+    ctx.clip();
+
+    // Series 1: Total People (Solid White)
+    if (chkSeriesTotal && chkSeriesTotal.checked && totalCoords.length > 0) {
+      drawSmoothSeries(ctx, totalCoords, '#ffffff', null, 2.2);
+
+      // Radar indicator at rightmost point
+      const lastCoord = totalCoords[totalCoords.length - 1];
+      if (lastCoord) {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(lastCoord.x, lastCoord.y, 3.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowBlur = 0;
+        ctx.fill();
+        ctx.restore();
+      }
+    }
+
+    // Series 2: Enrolled Staff (Solid Muted Gray)
+    if (chkSeriesStaff && chkSeriesStaff.checked && staffCoords.length > 0) {
+      drawSmoothSeries(ctx, staffCoords, '#a1a1aa', null, 1.6);
+    }
+
+    // Series 3: Unknown / Visitors (Solid Dim Gray)
+    if (chkSeriesVisitors && chkSeriesVisitors.checked && visitorCoords.length > 0) {
+      drawSmoothSeries(ctx, visitorCoords, '#71717a', null, 1.6);
+    }
+
+    // 4. Interactive Hover Crosshair & Dots
+    if (hoverState && hoverState.mouseX >= pad.left && hoverState.mouseX <= (pad.left + pw)) {
+      const hx = hoverState.mouseX;
+
+      // Vertical scanner crosshair line
+      ctx.save();
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.moveTo(hx, pad.top);
+      ctx.lineTo(hx, pad.top + ph);
+      ctx.stroke();
+
+      // Find closest point
+      let closestPt = null;
+      let minDistance = Infinity;
+
+      for (const c of totalCoords) {
+        const d = Math.abs(c.x - hx);
+        if (d < minDistance) {
+          minDistance = d;
+          closestPt = c;
+        }
+      }
+
+      if (closestPt && minDistance < 40) {
+        // Draw glow circles on curves
+        if (chkSeriesTotal && chkSeriesTotal.checked) {
+          ctx.beginPath();
+          ctx.arc(closestPt.x, closestPt.y, 5, 0, Math.PI * 2);
+          ctx.fillStyle = '#38bdf8';
+          ctx.strokeStyle = '#fff';
+          ctx.lineWidth = 2;
+          ctx.setLineDash([]);
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        // Update HTML Tooltip
+        if (graphTooltip) {
+          const raw = closestPt.raw;
+          const timeStr = new Date(raw.timestamp).toLocaleTimeString();
+          let statusText = 'Vacant';
+          if (raw.totalCount >= 5) statusText = 'Crowd Surge';
+          else if (raw.totalCount >= 3) statusText = 'Moderate Occupancy';
+          else if (raw.totalCount >= 1) statusText = 'Normal Occupancy';
+
+          graphTooltip.innerHTML = `
+            <div class="graph-tooltip-time">🕒 ${timeStr}</div>
+            <div class="graph-tooltip-row">
+              <span style="color:var(--accent-sky);">👥 Total People:</span>
+              <strong>${raw.totalCount}</strong>
+            </div>
+            <div class="graph-tooltip-row">
+              <span style="color:var(--accent-grass);">👔 Staff:</span>
+              <strong>${raw.staffCount}</strong>
+            </div>
+            <div class="graph-tooltip-row">
+              <span style="color:#a855f7;">🚶 Visitors:</span>
+              <strong>${raw.visitorCount}</strong>
+            </div>
+            <div class="graph-tooltip-row" style="margin-top:4px; font-size:0.68rem; color:var(--text-muted); border-top:1px dashed rgba(255,255,255,0.1); padding-top:2px;">
+              <span>Status:</span>
+              <span style="color:#fff;">${statusText}</span>
+            </div>
+          `;
+
+          // Clamp tooltip position inside canvas wrapper
+          const ttX = Math.max(70, Math.min(w - 70, closestPt.x));
+          const ttY = Math.max(50, closestPt.y - 15);
+          graphTooltip.style.left = `${ttX}px`;
+          graphTooltip.style.top = `${ttY}px`;
+          graphTooltip.classList.remove('hidden');
+        }
+      } else {
+        if (graphTooltip) graphTooltip.classList.add('hidden');
+      }
+      ctx.restore();
+    } else {
+      if (graphTooltip) graphTooltip.classList.add('hidden');
+    }
+
+    ctx.restore(); // Undo clip
+    ctx.restore(); // Undo setTransform
+
+    // 5. Draw Mini Sparkline in Side Panel
+    renderMiniSparkline(pts, peakVal);
+  }
+
+  // Draw Side-Panel Mini Sparkline
+  function renderMiniSparkline(pts, peakVal) {
+    if (!miniSparkline) return;
+    const sW = miniSparkline.width;
+    const sH = miniSparkline.height;
+    const sCtx = miniSparkline.getContext('2d');
+    sCtx.clearRect(0, 0, sW, sH);
+
+    if (miniSparklinePeak) {
+      miniSparklinePeak.textContent = `PEAK: ${peakVal}`;
+    }
+
+    if (!pts || pts.length === 0) return;
+
+    const last60 = pts.slice(-45);
+    let sMax = Math.max(3, ...last60.map(p => p.totalCount));
+
+    const coords = [];
+    for (let i = 0; i < last60.length; i++) {
+      const x = (i / (last60.length - 1 || 1)) * sW;
+      const y = sH - 4 - (last60[i].totalCount / sMax) * (sH - 8);
+      coords.push({ x, y, bottomY: sH });
+    }
+
+    drawSmoothSeries(sCtx, coords, '#ffffff', null, 1.8);
+  }
+
+  // Animation Loop (60 FPS smooth rendering)
+  let lastSampleCheck = 0;
+  function graphAnimationLoop() {
+    const now = Date.now();
+
+    // 1-second regular sampler
+    if (now - lastSampleCheck >= 1000) {
+      lastSampleCheck = now;
+      if (isSimulating) tickSimulation();
+      samplePeopleTimeData();
+    }
+
+    renderPeopleGraph();
+    requestAnimationFrame(graphAnimationLoop);
+  }
+
+  // UI Event Listeners for Controls
+  function setupGraphControls() {
+    // Time Range buttons
+    const rangeBtns = document.querySelectorAll('.time-range-btn');
+    rangeBtns.forEach(btn => {
+      btn.addEventListener('click', () => {
+        rangeBtns.forEach(b => b.classList.remove('active'));
+        btn.classList.add('active');
+        const r = btn.dataset.range;
+        selectedRange = r === 'all' ? 'all' : parseInt(r, 10);
+        updateMetricsDisplay();
+      });
+    });
+
+    // Pause / Resume Toggle
+    if (btnPauseGraph) {
+      btnPauseGraph.addEventListener('click', () => {
+        isGraphPaused = !isGraphPaused;
+        if (isGraphPaused) {
+          pauseFreezeTime = Date.now();
+          btnPauseGraph.textContent = '▶ Resume';
+          btnPauseGraph.classList.add('btn-primary');
+          btnPauseGraph.classList.remove('btn-secondary');
+          if (graphLiveStatus) {
+            graphLiveStatus.classList.add('paused');
+            graphLiveStatusText.textContent = 'PAUSED';
+            graphPulseDot.className = 'pulse-dot';
+          }
+        } else {
+          pauseFreezeTime = null;
+          btnPauseGraph.textContent = '⏸ Pause';
+          btnPauseGraph.classList.remove('btn-primary');
+          btnPauseGraph.classList.add('btn-secondary');
+          if (graphLiveStatus) {
+            graphLiveStatus.classList.remove('paused');
+            graphLiveStatusText.textContent = 'LIVE TRACKING';
+            graphPulseDot.className = 'pulse-dot online';
+          }
+        }
+      });
+    }
+
+    // Simulate Traffic Wave Toggle
+    if (btnToggleSimulate) {
+      btnToggleSimulate.addEventListener('click', () => {
+        isSimulating = !isSimulating;
+        if (isSimulating) {
+          simCycleStep = 0;
+          btnToggleSimulate.textContent = '⚡ Stop Sim';
+          btnToggleSimulate.classList.add('btn-primary');
+          btnToggleSimulate.classList.remove('btn-secondary');
+        } else {
+          btnToggleSimulate.textContent = '⚡ Simulate Traffic';
+          btnToggleSimulate.classList.remove('btn-primary');
+          btnToggleSimulate.classList.add('btn-secondary');
+          simCounts = { total: 0, staff: 0, visitors: 0 };
+        }
+      });
+    }
+
+    // Export CSV
+    if (btnExportCsv) {
+      btnExportCsv.addEventListener('click', () => {
+        if (peopleTimeline.length === 0) {
+          alert('No timeline data to export yet.');
+          return;
+        }
+
+        let csv = 'Timestamp_MS,DateTime_ISO,Time_Local,Total_People,Staff_Count,Visitor_Count\n';
+        for (const pt of peopleTimeline) {
+          const d = new Date(pt.timestamp);
+          csv += `${pt.timestamp},${d.toISOString()},"${d.toLocaleTimeString()}",${pt.totalCount},${pt.staffCount},${pt.visitorCount}\n`;
+        }
+
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ceova_people_occupancy_timeline_${new Date().toISOString().replace(/[:.]/g, '-')}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Export Snapshot PNG
+    if (btnExportGraphPng && peopleCanvas) {
+      btnExportGraphPng.addEventListener('click', () => {
+        try {
+          const snapCanvas = document.createElement('canvas');
+          snapCanvas.width = 1200;
+          snapCanvas.height = 630;
+          const sCtx = snapCanvas.getContext('2d');
+
+          // Dark cyber background
+          sCtx.fillStyle = '#08080c';
+          sCtx.fillRect(0, 0, 1200, 630);
+
+          // Top Header Banner
+          sCtx.fillStyle = '#38bdf8';
+          sCtx.font = 'bold 22px Plus Jakarta Sans, sans-serif';
+          sCtx.fillText('CEOVA VISION CCTV // PEOPLE OCCUPANCY OVER TIME', 40, 48);
+
+          sCtx.fillStyle = '#8e8e93';
+          sCtx.font = '14px JetBrains Mono, monospace';
+          sCtx.fillText(`Report Generated: ${new Date().toLocaleString()} | CCTV CAM-01`, 40, 76);
+
+          // Summary Stats Pill Bar
+          sCtx.fillStyle = 'rgba(255, 255, 255, 0.06)';
+          sCtx.fillRect(40, 96, 1120, 60);
+
+          sCtx.fillStyle = '#22c55e';
+          sCtx.font = 'bold 15px JetBrains Mono, monospace';
+          sCtx.fillText(`CURRENT: ${gMetricCurrent?.textContent || 0}`, 60, 132);
+
+          sCtx.fillStyle = '#f59e0b';
+          sCtx.fillText(`PEAK: ${gMetricPeak?.textContent || 0} (${gMetricPeakTime?.textContent || '--'})`, 280, 132);
+
+          sCtx.fillStyle = '#38bdf8';
+          sCtx.fillText(`AVG OCCUPANCY: ${gMetricAvg?.textContent || 0} / min`, 580, 132);
+
+          sCtx.fillStyle = '#c084fc';
+          sCtx.fillText(`TOTAL UNIQUE IDs: ${gMetricTotal?.textContent || 0}`, 880, 132);
+
+          // Draw main chart into snapshot
+          sCtx.drawImage(peopleCanvas, 40, 175, 1120, 410);
+
+          const dataUrl = snapCanvas.toDataURL('image/png');
+          const a = document.createElement('a');
+          a.href = dataUrl;
+          a.download = `ceova_people_graph_${Date.now()}.png`;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+        } catch (e) {
+          alert('Snapshot failed: ' + e.message);
+        }
+      });
+    }
+
+    // Reset Timeline
+    if (btnClearGraph) {
+      btnClearGraph.addEventListener('click', () => {
+        if (confirm('Clear all recorded people timeline data?')) {
+          peopleTimeline = [];
+          const baseNow = Date.now();
+          for (let i = 20; i >= 0; i--) {
+            peopleTimeline.push({
+              timestamp: baseNow - (i * 1000),
+              totalCount: 0,
+              staffCount: 0,
+              visitorCount: 0,
+              cumulativeCount: 0
+            });
+          }
+          try {
+            localStorage.removeItem(TIMELINE_STORAGE_KEY);
+          } catch (_) {}
+          fetch('/api/people/timeline', { method: 'DELETE' }).catch(() => {});
+          updateMetricsDisplay();
+        }
+      });
+    }
+
+    // Mouse Tracking for Interactive Tooltip & Crosshair
+    if (graphWrapper) {
+      graphWrapper.addEventListener('mousemove', (e) => {
+        const rect = graphWrapper.getBoundingClientRect();
+        hoverState = {
+          mouseX: e.clientX - rect.left,
+          mouseY: e.clientY - rect.top
+        };
+      });
+
+      graphWrapper.addEventListener('mouseleave', () => {
+        hoverState = null;
+        if (graphTooltip) graphTooltip.classList.add('hidden');
+      });
+    }
+
+    // Series Checkbox listeners
+    if (chkSeriesTotal) chkSeriesTotal.addEventListener('change', () => renderPeopleGraph());
+    if (chkSeriesStaff) chkSeriesStaff.addEventListener('change', () => renderPeopleGraph());
+    if (chkSeriesVisitors) chkSeriesVisitors.addEventListener('change', () => renderPeopleGraph());
+
+    // Window Resize Handler
+    window.addEventListener('resize', () => {
+      renderPeopleGraph();
+      renderPopularTimesGraph();
+    });
+  }
+
+  // =========================================================
+  // POPULAR TIMES (DAY & HOURLY HISTOGRAM ENGINE)
+  // =========================================================
+  const popularTimesCanvas = document.getElementById('popularTimesCanvas');
+  const popularChartWrapper = document.getElementById('popularChartWrapper');
+  const popularTooltip = document.getElementById('popularTooltip');
+  const popularDaySelect = document.getElementById('popularDaySelect');
+  const btnPrevDay = document.getElementById('btnPrevDay');
+  const btnNextDay = document.getElementById('btnNextDay');
+  const popPeakHour = document.getElementById('popPeakHour');
+  const popDailyTotal = document.getElementById('popDailyTotal');
+  const popCurrentStatus = document.getElementById('popCurrentStatus');
+  const btnSeedPopular = document.getElementById('btnSeedPopular');
+  const btnExportPopularCsv = document.getElementById('btnExportPopularCsv');
+
+  const btnTabPopularTimes = document.getElementById('btnTabPopularTimes');
+  const btnTabLiveGraph = document.getElementById('btnTabLiveGraph');
+  const popularTimesSection = document.getElementById('popularTimesSection');
+  const liveGraphSection = document.getElementById('liveGraphSection');
+
+  const POPULAR_STORAGE_KEY = 'ceova_popular_times_cache_v3';
+  const DAY_NAMES = ['Sundays', 'Mondays', 'Tuesdays', 'Wednesdays', 'Thursdays', 'Fridays', 'Saturdays'];
+  let popularTimesData = {};
+  let currentPopularDay = new Date().getDay(); // 0 = Sun, 1 = Mon, ..., 4 = Thu
+  let hoveredPopularSlot = null; // index 0..16
+
+  if (popularDaySelect) {
+    popularDaySelect.value = String(currentPopularDay);
+  }
+
+  // Purge deprecated mock cache from localStorage
+  try {
+    localStorage.removeItem('ceova_popular_times_cache_v2');
+    const cached = localStorage.getItem(POPULAR_STORAGE_KEY);
+    if (cached) {
+      popularTimesData = JSON.parse(cached);
+    }
+  } catch (_) {}
+
+  // Fetch from server SQLite database
+  async function loadPopularTimesData(day = currentPopularDay) {
+    try {
+      const res = await fetch(`/api/people/popular-times?day_of_week=${day}`);
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.allDays) {
+        popularTimesData = data.allDays;
+        try {
+          localStorage.setItem(POPULAR_STORAGE_KEY, JSON.stringify(popularTimesData));
+        } catch (_) {}
+      }
+      renderPopularTimesGraph();
+    } catch (_) {
+      renderPopularTimesGraph();
+    }
+  }
+
+  // Record a live detection sample to the current day & hour
+  function recordLivePopularSample(count) {
+    const now = new Date();
+    const day = now.getDay();
+    const hour = now.getHours();
+
+    if (popularTimesData && popularTimesData[day] && popularTimesData[day].hours) {
+      const hrObj = popularTimesData[day].hours.find(h => h.hour === hour);
+      if (hrObj) {
+        const prevSamples = hrObj.sampleCount || 0;
+        if (prevSamples === 0) {
+          hrObj.sampleCount = 1;
+          hrObj.avgPeople = count;
+          hrObj.peakPeople = count;
+        } else {
+          hrObj.sampleCount = prevSamples + 1;
+          hrObj.avgPeople = Math.round(((hrObj.avgPeople * prevSamples + count) / hrObj.sampleCount));
+          hrObj.peakPeople = Math.max(hrObj.peakPeople || 0, count);
+        }
+
+        try {
+          localStorage.setItem(POPULAR_STORAGE_KEY, JSON.stringify(popularTimesData));
+        } catch (_) {}
+      }
+    }
+
+    // Also persist to SQLite backend
+    fetch('/api/people/popular-times/record', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ day_of_week: day, hour_of_day: hour, count })
+    }).catch(() => {});
+
+    if (day === currentPopularDay) {
+      renderPopularTimesGraph();
+    }
+  }
+
+  // Render Popular Times Histogram Canvas
+  function renderPopularTimesGraph() {
+    if (!popularTimesCanvas || !popularChartWrapper) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const rect = popularChartWrapper.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+
+    if (w <= 0 || h <= 0) return;
+
+    if (popularTimesCanvas.width !== Math.round(w * dpr) || popularTimesCanvas.height !== Math.round(h * dpr)) {
+      popularTimesCanvas.width = Math.round(w * dpr);
+      popularTimesCanvas.height = Math.round(h * dpr);
+    }
+
+    const ctx = popularTimesCanvas.getContext('2d');
+    ctx.save();
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, w, h);
+
+    // Visible hours range: 6 AM (6) to 10 PM (22) = 17 bars matching 6a, 9a, 12p, 3p, 6p, 9p
+    const startHour = 6;
+    const endHour = 22;
+    const totalBars = endHour - startHour + 1; // 17 bars
+
+    const dayObj = popularTimesData[currentPopularDay];
+    const allHours = dayObj && dayObj.hours ? dayObj.hours : [];
+
+    const chartHours = [];
+    let maxCount = 0;
+    let busiestHourObj = null;
+    let dailySum = 0;
+
+    for (let hr = startHour; hr <= endHour; hr++) {
+      const found = allHours.find(h => h.hour === hr);
+      const avg = found ? Math.round(found.avgPeople) : 0;
+      const peak = found ? found.peakPeople : 0;
+      const period = hr >= 12 ? 'PM' : 'AM';
+      const dispH = hr % 12 === 0 ? 12 : hr % 12;
+      const label = `${dispH} ${period}`;
+      const short = `${dispH}${period.toLowerCase()[0]}`;
+
+      if (avg > maxCount) {
+        maxCount = avg;
+        busiestHourObj = { hour: hr, label, avg, peak };
+      }
+      dailySum += avg;
+
+      chartHours.push({
+        hour: hr,
+        label,
+        short,
+        avg,
+        peak
+      });
+    }
+
+    // Update Summary Strip
+    if (popPeakHour) {
+      if (busiestHourObj && busiestHourObj.avg > 0) {
+        const nextH = (busiestHourObj.hour + 1) % 12 === 0 ? 12 : (busiestHourObj.hour + 1) % 12;
+        const nextPeriod = (busiestHourObj.hour + 1) >= 12 ? 'PM' : 'AM';
+        popPeakHour.textContent = `${busiestHourObj.label} - ${nextH} ${nextPeriod} (${busiestHourObj.avg} People Avg)`;
+      } else {
+        popPeakHour.textContent = '--';
+      }
+    }
+    if (popDailyTotal) {
+      popDailyTotal.textContent = `${dailySum} People Total`;
+    }
+    if (popCurrentStatus) {
+      const now = new Date();
+      const isToday = now.getDay() === currentPopularDay;
+      if (isToday) {
+        const currHour = now.getHours();
+        const currObj = chartHours.find(h => h.hour === currHour);
+        const liveCount = (peopleTimeline.length > 0) ? peopleTimeline[peopleTimeline.length - 1].totalCount : 0;
+        const typical = currObj ? currObj.avg : 0;
+        if (typical > 0) {
+          popCurrentStatus.textContent = `Live: ${liveCount} in view (usually ~${typical} at ${currHour % 12 || 12} ${currHour >= 12 ? 'PM' : 'AM'})`;
+        } else {
+          popCurrentStatus.textContent = `Live: ${liveCount} in view (recording real live detections)`;
+        }
+      } else {
+        popCurrentStatus.textContent = `Day View: ${DAY_NAMES[currentPopularDay]} (Recorded Traffic)`;
+      }
+    }
+
+    // Chart margins
+    const pad = { left: 16, right: 16, top: 22, bottom: 8 };
+    const chartW = w - pad.left - pad.right;
+    const chartH = h - pad.top - pad.bottom;
+    const slotW = chartW / totalBars;
+    const barW = Math.max(6, Math.min(26, slotW * 0.72));
+    const scaleMax = Math.max(10, Math.ceil(maxCount * 1.15));
+
+    const now = new Date();
+    const isToday = now.getDay() === currentPopularDay;
+    const currentHour = now.getHours();
+
+    // If completely clean (0 data across the day), display subtle live status notice
+    if (maxCount === 0) {
+      ctx.save();
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.3)';
+      ctx.font = '500 12px Plus Jakarta Sans, -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('No people recorded yet • Ready to track live CCTV detections', w / 2, pad.top + chartH / 2 - 6);
+      ctx.restore();
+    }
+
+    // Render bars
+    for (let i = 0; i < totalBars; i++) {
+      const item = chartHours[i];
+      const slotX = pad.left + i * slotW;
+      const barX = slotX + (slotW - barW) / 2;
+
+      let barH = 0;
+      if (item.avg > 0) {
+        barH = Math.max(4, (item.avg / scaleMax) * (chartH - 8));
+      }
+      const barY = pad.top + chartH - barH;
+
+      const isCurrentHour = isToday && (item.hour === currentHour);
+      const isHovered = hoveredPopularSlot === i;
+
+      ctx.save();
+
+      if (barH > 0) {
+        // Rounded bar top
+        const r = Math.min(4, barW / 2);
+        ctx.beginPath();
+        ctx.moveTo(barX, pad.top + chartH);
+        ctx.lineTo(barX, barY + r);
+        ctx.quadraticCurveTo(barX, barY, barX + r, barY);
+        ctx.lineTo(barX + barW - r, barY);
+        ctx.quadraticCurveTo(barX + barW, barY, barX + barW, barY + r);
+        ctx.lineTo(barX + barW, pad.top + chartH);
+        ctx.closePath();
+
+        if (isCurrentHour) {
+          // Vibrant Glowing Green for Live Current Hour
+          ctx.fillStyle = isHovered ? '#4ade80' : '#22c55e';
+          ctx.shadowColor = 'rgba(34, 197, 94, 0.7)';
+          ctx.shadowBlur = 10;
+        } else if (isHovered) {
+          // Highlighted Teal
+          ctx.fillStyle = '#38bdf8';
+          ctx.shadowColor = 'rgba(56, 189, 248, 0.6)';
+          ctx.shadowBlur = 8;
+        } else {
+          // Signature Google Maps teal color (#2a9d8f)
+          ctx.fillStyle = '#2a9d8f';
+        }
+
+        ctx.fill();
+
+        // If current hour, draw a small live pulsing beacon above it
+        if (isCurrentHour) {
+          const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, barY - 7, 3 + pulse * 2, 0, Math.PI * 2);
+          ctx.fillStyle = '#4ade80';
+          ctx.shadowColor = '#22c55e';
+          ctx.shadowBlur = 6;
+          ctx.fill();
+        }
+      } else {
+        if (isCurrentHour) {
+          // Subtle glowing live dot on the baseline for the current hour
+          const pulse = (Math.sin(Date.now() / 200) + 1) / 2;
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, pad.top + chartH - 3, 3 + pulse, 0, Math.PI * 2);
+          ctx.fillStyle = '#22c55e';
+          ctx.shadowColor = 'rgba(34, 197, 94, 0.8)';
+          ctx.shadowBlur = 8;
+          ctx.fill();
+        } else {
+          // Subtle dot for 0 count
+          ctx.beginPath();
+          ctx.arc(barX + barW / 2, pad.top + chartH - 2, 1.5, 0, Math.PI * 2);
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.15)';
+          ctx.fill();
+        }
+      }
+
+      ctx.restore();
+    }
+
+    // Tooltip update
+    if (hoveredPopularSlot !== null && hoveredPopularSlot >= 0 && hoveredPopularSlot < totalBars) {
+      const item = chartHours[hoveredPopularSlot];
+      const slotX = pad.left + hoveredPopularSlot * slotW;
+      const barCenterX = slotX + slotW / 2;
+
+      let barH = item.avg > 0 ? Math.max(4, (item.avg / scaleMax) * (chartH - 8)) : 0;
+      const barTopY = pad.top + chartH - barH;
+
+      if (popularTooltip) {
+        const isCurrent = isToday && (item.hour === currentHour);
+        popularTooltip.innerHTML = `
+          <div style="font-weight:700; color:var(--accent-cyan); border-bottom:1px solid rgba(255,255,255,0.1); padding-bottom:3px; margin-bottom:3px;">
+            🕒 ${item.label} ${isCurrent ? '<span style="color:var(--accent-grass); font-size:0.65rem;">● LIVE</span>' : ''}
+          </div>
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <span style="color:#a1a1aa;">Average People:</span>
+            <strong style="color:#fff;">${item.avg}</strong>
+          </div>
+          <div style="display:flex; justify-content:space-between; gap:10px;">
+            <span style="color:#a1a1aa;">Peak Occupancy:</span>
+            <strong style="color:#f59e0b;">${item.peak}</strong>
+          </div>
+        `;
+
+        const ttX = Math.max(60, Math.min(w - 60, barCenterX));
+        const ttY = Math.max(40, barTopY - 10);
+        popularTooltip.style.left = `${ttX}px`;
+        popularTooltip.style.top = `${ttY}px`;
+        popularTooltip.classList.remove('hidden');
+      }
+    } else {
+      if (popularTooltip) popularTooltip.classList.add('hidden');
+    }
+
+    ctx.restore();
+  }
+
+  // Popular Times Event Listeners
+  function setupPopularTimesControls() {
+    // Mode Switcher Tabs
+    if (btnTabPopularTimes && btnTabLiveGraph) {
+      btnTabPopularTimes.addEventListener('click', () => {
+        btnTabPopularTimes.classList.add('active');
+        btnTabLiveGraph.classList.remove('active');
+        if (popularTimesSection) popularTimesSection.style.display = 'flex';
+        if (liveGraphSection) liveGraphSection.style.display = 'none';
+        renderPopularTimesGraph();
+      });
+
+      btnTabLiveGraph.addEventListener('click', () => {
+        btnTabLiveGraph.classList.add('active');
+        btnTabPopularTimes.classList.remove('active');
+        if (popularTimesSection) popularTimesSection.style.display = 'none';
+        if (liveGraphSection) liveGraphSection.style.display = 'flex';
+        renderPeopleGraph();
+      });
+    }
+
+    // Day dropdown selector
+    if (popularDaySelect) {
+      popularDaySelect.addEventListener('change', () => {
+        currentPopularDay = parseInt(popularDaySelect.value, 10);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Previous day arrow
+    if (btnPrevDay) {
+      btnPrevDay.addEventListener('click', () => {
+        currentPopularDay = (currentPopularDay + 6) % 7;
+        if (popularDaySelect) popularDaySelect.value = String(currentPopularDay);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Next day arrow
+    if (btnNextDay) {
+      btnNextDay.addEventListener('click', () => {
+        currentPopularDay = (currentPopularDay + 1) % 7;
+        if (popularDaySelect) popularDaySelect.value = String(currentPopularDay);
+        loadPopularTimesData(currentPopularDay);
+      });
+    }
+
+    // Clear data button
+    if (btnSeedPopular) {
+      btnSeedPopular.addEventListener('click', async () => {
+        if (confirm('Clear all recorded people occupancy data and reset to 0?')) {
+          try {
+            await fetch('/api/people/popular-times/reset', { method: 'POST' });
+            try {
+              localStorage.removeItem(POPULAR_STORAGE_KEY);
+            } catch (_) {}
+            popularTimesData = {};
+            await loadPopularTimesData(currentPopularDay);
+            alert('All local occupancy data cleared and reset to 0.');
+          } catch (e) {
+            alert('Reset failed: ' + e.message);
+          }
+        }
+      });
+    }
+
+    // Export Popular Times CSV
+    if (btnExportPopularCsv) {
+      btnExportPopularCsv.addEventListener('click', () => {
+        const dayObj = popularTimesData[currentPopularDay];
+        if (!dayObj || !dayObj.hours || dayObj.hours.length === 0) {
+          alert('No hourly data available to export.');
+          return;
+        }
+
+        let csv = 'Day,Hour_24,Hour_Label,Average_People,Peak_People,Sample_Count\n';
+        for (const h of dayObj.hours) {
+          csv += `"${dayObj.dayName}",${h.hour},"${h.label}",${h.avgPeople},${h.peakPeople},${h.sampleCount || 10}\n`;
+        }
+
+        const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `ceova_popular_times_${dayObj.dayName.toLowerCase()}.csv`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      });
+    }
+
+    // Mouse Tracking on Popular Times Canvas
+    if (popularChartWrapper) {
+      popularChartWrapper.addEventListener('mousemove', (e) => {
+        const rect = popularChartWrapper.getBoundingClientRect();
+        const mouseX = e.clientX - rect.left;
+        const padLeft = 16;
+        const padRight = 16;
+        const chartW = rect.width - padLeft - padRight;
+        const slotW = chartW / 17;
+
+        if (mouseX >= padLeft && mouseX <= (padLeft + chartW)) {
+          const slot = Math.floor((mouseX - padLeft) / slotW);
+          hoveredPopularSlot = Math.max(0, Math.min(16, slot));
+        } else {
+          hoveredPopularSlot = null;
+        }
+        renderPopularTimesGraph();
+      });
+
+      popularChartWrapper.addEventListener('mouseleave', () => {
+        hoveredPopularSlot = null;
+        if (popularTooltip) popularTooltip.classList.add('hidden');
+        renderPopularTimesGraph();
+      });
+    }
+  }
+
+  // Apply initial saved preferences
+  applyAspectMode(currentAspectMode, false);
+  applyFitMode(currentFitMode, false);
+  applyRotation(currentRotation, false);
+
+  // Startup Initialization
+  setupNetworkAndQR();
+  initWebSocket();
+  checkActiveCameraOnLoad();
+  refreshCameraSwitcher();
+  fetchLivePeopleSummary();
+  setupGraphControls();
+  setupPopularTimesControls();
+  loadPopularTimesData();
+  graphAnimationLoop();
+})();
