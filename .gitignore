@@ -29,6 +29,8 @@ runtime/*.zip
 releases/dist/
 releases/*.tar.gz
 releases/*.zip
+dist/
+dist-*
 
 # Dependencies & Caches
 node_modules/

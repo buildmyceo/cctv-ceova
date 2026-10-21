@@ -1,18 +1,25 @@
 {
-  "name": "ceova-cctv-camera",
+  "name": "ceova-cctv",
   "version": "1.0.0",
-  "description": "Scan QR from phone to stream phone camera to web page in real-time",
-  "main": "server.js",
+  "description": "CEOVA CCTV Autonomous Surveillance Hub for MacBook & Windows",
+  "main": "electron/main.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js"
+    "dev": "node --watch server.js",
+    "app": "electron electron/main.js",
+    "dist": "electron-builder",
+    "dist:win": "electron-builder --win",
+    "dist:mac": "electron-builder --mac",
+    "dist:all": "electron-builder -mw"
   },
   "keywords": [
     "cctv",
     "webrtc",
-    "qr-code",
     "camera-stream",
-    "phone-camera"
+    "surveillance",
+    "electron-app",
+    "macbook",
+    "windows"
   ],
   "author": "Ceova",
   "license": "MIT",
@@ -27,5 +34,90 @@
     "qrcode-terminal": "^0.12.0",
     "selfsigned": "^2.4.1",
     "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.ceova.cctv",
+    "productName": "CEOVA-CCTV",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+    "mac": {
+      "category": "public.app-category.video",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png",
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "CEOVA CCTV"
+    },
+    "files": [
+      "server.js",
+      "supabaseClient.js",
+      "electron/**/*",
+      "api/**/*",
+      "bots/**/*",
+      "context/**/*",
+      "db/**/*",
+      "events/**/*",
+      "hardware/**/*",
+      "identity/**/*",
+      "public/**/*",
+      "security/**/*",
+      "services/**/*",
+      "vision/**/*",
+      "yolov8n.pt",
+      "package.json",
+      "!**/*.map",
+      "!data/run/**/*",
+      "!data/logs/**/*",
+      "!data/*.db*",
+      "!**/*.test.js",
+      "!tests/**/*",
+      "!releases/**/*",
+      "!dist/**/*"
+    ]
   }
 }
