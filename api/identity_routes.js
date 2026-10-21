@@ -840,12 +840,30 @@ function createIdentityRouter(options = {}) {
    */
   router.post('/vision/yolo/detect', async (req, res) => {
     try {
-      const { image, conf = 0.30, iou = 0.45, classes } = req.body;
+      const {
+        image,
+        conf = 0.30,
+        iou = 0.45,
+        classes,
+        camera_id,
+        cameraId,
+        uid,
+        userId,
+        threshold
+      } = req.body;
+
       if (!image) {
         return res.status(400).json({ error: 'Missing frame image (base64)' });
       }
 
-      const result = await yoloBridge.detectHumans(image, { conf, iou, classes });
+      const result = await yoloBridge.detectHumans(image, {
+        conf,
+        iou,
+        classes,
+        camera_id: camera_id || cameraId,
+        uid: uid || userId,
+        threshold
+      });
       res.json(result);
     } catch (err) {
       // Return graceful response indicating fallback
