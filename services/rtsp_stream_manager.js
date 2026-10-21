@@ -44,6 +44,7 @@ class RtspStreamInstance extends EventEmitter {
     this.cameraId = cameraId;
     this.rtspUrl = rtspUrl;
     this.options = options;
+    this.transport = options.transport || 'tcp'; // 'tcp' | 'udp'
     this.process = null;
     this.isRunning = false;
     this.lastFrame = null;
@@ -91,21 +92,19 @@ class RtspStreamInstance extends EventEmitter {
     }
 
     // 2. Prepare low-latency RTSP to MJPEG pipe arguments
-    // Attempt to sanitize command line by separating Basic auth if supported
     let inputUrl = this.rtspUrl;
     const args = [
       '-hide_banner',
       '-loglevel', 'warning',
-      '-rtsp_transport', 'tcp',
-      '-reorder_queue_size', '5',
-      '-buffer_size', '2048000',
-      '-stimeout', '5000000',
+      '-rtsp_transport', this.transport,
       '-reorder_queue_size', '10',
+      '-buffer_size', '4096000',
+      '-timeout', '12000000',
       '-i', inputUrl,
       '-f', 'image2pipe',
       '-vcodec', 'mjpeg',
       '-q:v', '3',
-      '-vf', 'fps=15,scale=1280:-1',
+      '-vf', 'fps=15,scale=1280:-2',
       '-'
     ];
 
@@ -133,7 +132,7 @@ class RtspStreamInstance extends EventEmitter {
           this._handleNewFrame(frame);
           soi = buffer.indexOf(Buffer.from([0xFF, 0xD8]));
         } else {
-          // If we have SOI but haven't received EOI yet, keep remaining buffer
+          // If we have SOI but haven't received EOI yet, keep remaining buffer from SOI
           if (soi > 0) {
             buffer = buffer.slice(soi);
           }
@@ -141,21 +140,34 @@ class RtspStreamInstance extends EventEmitter {
         }
       }
 
-      // Safety guard against memory leak if buffer grows too large without valid JPEG
-      if (buffer.length > 5 * 1024 * 1024) {
-        buffer = Buffer.alloc(0);
+      // Drop stale bytes if no SOI found and buffer exceeds 512KB
+      if (soi === -1 && buffer.length > 512 * 1024) {
+        const lastByte = buffer[buffer.length - 1];
+        buffer = lastByte === 0xFF ? buffer.slice(-1) : Buffer.alloc(0);
       }
     });
 
     this.process.stderr.on('data', (chunk) => {
-      const errStr = redactRtspUrl(chunk.toString());
+      const rawText = chunk.toString();
+      const errStr = redactRtspUrl(rawText);
+      if (errStr.trim()) {
+        console.warn(`[RtspStreamInstance ${this.cameraId}] FFmpeg (${this.transport}): ${errStr.trim()}`);
+      }
+
       if (errStr.includes('401') || errStr.includes('Unauthorized') || errStr.includes('authorization failed')) {
         this.lastError = 'RTSP 401 Unauthorized: Invalid camera username or password.';
         this.emit('auth-failed', this.lastError);
+      } else if (errStr.includes('461') || errStr.includes('Unsupported Transport') || errStr.includes('method SETUP failed')) {
+        this.lastError = 'Camera requires UDP transport. Switching transport to UDP...';
+        this.transport = 'udp';
       } else if (errStr.includes('Connection refused') || errStr.includes('No route to host')) {
         this.lastError = 'Camera offline or unreachable on network.';
       } else if (errStr.includes('404') || errStr.includes('Not Found')) {
         this.lastError = 'RTSP 404: Stream channel or path not found on camera.';
+      } else if (errStr.includes('Connection timed out') || errStr.includes('timed out')) {
+        this.lastError = 'Camera connection timed out waiting for video keyframe.';
+      } else if (!this.lastError) {
+        this.lastError = errStr.trim().split('\n').pop();
       }
     });
 
@@ -168,7 +180,12 @@ class RtspStreamInstance extends EventEmitter {
       // Auto-reconnect if not explicitly stopped
       if (!this.stoppedByUser && this.restartAttempts < this.maxRestartAttempts) {
         this.restartAttempts++;
-        const delay = Math.min(10000, this.restartAttempts * 2000);
+        // If TCP failed on first attempt, try UDP on second attempt
+        if (this.restartAttempts === 1 && this.transport === 'tcp') {
+          console.log(`[RtspStreamInstance ${this.cameraId}] Retrying stream with UDP transport fallback...`);
+          this.transport = 'udp';
+        }
+        const delay = Math.min(8000, this.restartAttempts * 1500);
         this.reconnectTimer = setTimeout(() => {
           if (!this.stoppedByUser) this.start();
         }, delay);
@@ -177,7 +194,7 @@ class RtspStreamInstance extends EventEmitter {
 
     this.process.on('error', (err) => {
       this.lastError = redactRtspUrl(err.message);
-      console.warn(`[RtspStreamInstance] FFmpeg error for ${this.cameraId}: ${this.lastError}`);
+      console.warn(`[RtspStreamInstance] FFmpeg spawn error for ${this.cameraId}: ${this.lastError}`);
       this.isRunning = false;
     });
 
@@ -350,14 +367,12 @@ class RtspStreamManager {
     let stream = this.streams.get(cameraId);
 
     if (!stream && fallbackRtspUrl) {
-      // Only start FFmpeg for real RTSP streams — skip HTTP/proxy URLs
       const isRtsp = fallbackRtspUrl.startsWith('rtsp://') || fallbackRtspUrl.startsWith('rtsps://');
       if (isRtsp) {
         stream = this.startStream(cameraId, fallbackRtspUrl);
       } else {
-        // For HTTP streams, redirect the browser directly to the proxy URL
-        res.redirect(302, fallbackRtspUrl);
-        return;
+        const { pipeHttpCameraStream } = require('./http_camera_client');
+        return pipeHttpCameraStream(fallbackRtspUrl, res, req);
       }
     }
 
@@ -386,18 +401,23 @@ class RtspStreamManager {
    * Get single latest snapshot:
    * GET /api/cameras/:id/snapshot.jpg
    */
-  handleSnapshotRequest(req, res, cameraId) {
-    const stream = this.streams.get(cameraId);
-    if (!stream || !stream.lastFrame) {
-      return res.status(404).send('No snapshot available yet');
+  handleSnapshotRequest(req, res, cameraId, fallbackRtspUrl = null) {
+    let stream = this.streams.get(cameraId);
+    if (!stream && fallbackRtspUrl) {
+      const isRtsp = fallbackRtspUrl.startsWith('rtsp://') || fallbackRtspUrl.startsWith('rtsps://');
+      if (isRtsp) {
+        stream = this.startStream(cameraId, fallbackRtspUrl);
+      }
     }
 
+    const frame = (stream && stream.lastFrame) ? stream.lastFrame : DEFAULT_PLACEHOLDER;
     res.writeHead(200, {
       'Content-Type': 'image/jpeg',
-      'Content-Length': stream.lastFrame.length,
-      'Cache-Control': 'no-cache'
+      'Content-Length': frame.length,
+      'Cache-Control': 'no-cache, no-store, must-revalidate',
+      'Pragma': 'no-cache'
     });
-    res.end(stream.lastFrame);
+    res.end(frame);
   }
 }
 

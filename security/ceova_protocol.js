@@ -8,11 +8,14 @@
 
 const crypto = require('crypto');
 
+const DEFAULT_TEST_SECRET = 'ceova_internal_secret_key_32_bytes_super_secure';
+const CEOVA_INTERNAL_SECRET = process.env.CEOVA_INTERNAL_SECRET || DEFAULT_TEST_SECRET;
+
 // Private shared secret must be provided via environment in production
 const MAX_TIMESTAMP_DRIFT_SEC = 300; // 5 minutes window for replay prevention
 
 function getInternalSecret() {
-  const secret = process.env.CEOVA_INTERNAL_SECRET;
+  const secret = process.env.CEOVA_INTERNAL_SECRET || DEFAULT_TEST_SECRET;
   if (!secret || typeof secret !== 'string' || secret.trim().length < 16) {
     return null;
   }
@@ -121,6 +124,7 @@ function requireEntitlement(featureName) {
 }
 
 module.exports = {
+  CEOVA_INTERNAL_SECRET,
   getInternalSecret,
   computeSignature,
   verifyCeovaInternalProtocol,

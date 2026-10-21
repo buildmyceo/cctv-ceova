@@ -181,10 +181,49 @@ function createCameraDiscoveryRouter(options = {}) {
       const HTTP_ONLY_PORTS = new Set([80, 443, 8080, 8081, 8088, 5000, 5800, 3000, 3001, 6000, 7000]);
 
       const RTSP_PATHS = [
-        '/Streaming/Channels/101', '/cam/realmonitor?channel=1&subtype=0',
-        '/h264Preview_01_main', '/live', '/stream1', '/ch0', '/onvif1',
-        '/h264_pcm.sdp', '/', '/ch01/0', '/unicast/c1/s0/live',
-        '/Streaming/Channels/1', '/h264/ch1/main/av_stream'
+        // Hikvision / Hilook / Annke / Ezviz
+        '/Streaming/Channels/101',
+        '/Streaming/Channels/102',
+        '/Streaming/Channels/1',
+        '/h264/ch1/main/av_stream',
+        '/h264/ch1/sub/av_stream',
+
+        // Dahua / CP Plus / Amcrest / Lorex / IMOU
+        '/cam/realmonitor?channel=1&subtype=0',
+        '/cam/realmonitor?channel=1&subtype=1',
+        '/live',
+        '/ch01/0',
+
+        // TP-Link Tapo / Kasa
+        '/stream1',
+        '/stream2',
+
+        // Xiongmai (XM) / NetSurveillance / Tuya / Goke / Anyka
+        '/live/ch0',
+        '/ch0',
+        '/ch0_0',
+        '/media/video1',
+        '/media/video2',
+
+        // Reolink
+        '/h264Preview_01_main',
+        '/h264Preview_01_sub',
+        '/Preview_01_main',
+
+        // Uniview
+        '/unicast/c1/s0/live',
+
+        // IP Webcam / Phone camera
+        '/h264_pcm.sdp',
+        '/video',
+        '/shot.jpg',
+
+        // Generic ONVIF / RTSP
+        '/onvif1',
+        '/onvif2',
+        '/video1',
+        '/live.sdp',
+        '/'
       ];
 
       // Helper: probe a single port for both RTSP and HTTP, return first match
@@ -194,17 +233,26 @@ function createCameraDiscoveryRouter(options = {}) {
         // Try RTSP on likely-RTSP ports (or custom port)
         const tryRtsp = RTSP_PORTS.has(p) || (customPort === p) || !HTTP_ONLY_PORTS.has(p);
         if (tryRtsp) {
-          // All RTSP paths in parallel, race for first success
-          const rtspTask = Promise.any(
-            RTSP_PATHS.map(path =>
-              cameraDiscoveryBot._testRtspHandshake(host, p, path, username, password)
-                .then(r => {
-                  if (r.success) return { type: 'rtsp', path, result: r };
-                  if (r.status === 'AUTH_FAILED') { authFailedDetected = true; }
-                  return Promise.reject(new Error('not matched'));
-                })
-            )
-          ).catch(() => null);
+          // Probe in batches of 4 to avoid overwhelming the camera
+          const rtspTask = (async () => {
+            const batchSize = 4;
+            for (let b = 0; b < RTSP_PATHS.length; b += batchSize) {
+              const batch = RTSP_PATHS.slice(b, b + batchSize);
+              const batchResults = await Promise.all(
+                batch.map(path =>
+                  cameraDiscoveryBot._testRtspHandshake(host, p, path, username, password)
+                    .then(r => {
+                      if (r.success) return { type: 'rtsp', path, result: r };
+                      if (r.status === 'AUTH_FAILED') { authFailedDetected = true; }
+                      return null;
+                    }).catch(() => null)
+                )
+              );
+              const found = batchResults.find(r => r !== null);
+              if (found) return found;
+            }
+            return null;
+          })();
           tasks.push(rtspTask);
         }
 
@@ -311,6 +359,45 @@ function createCameraDiscoveryRouter(options = {}) {
           status: 'Authentication failed',
           error: 'Camera detected, but authentication failed.',
           hint: 'The camera responded, but the username or password was rejected. Please verify your CCTV/NVR credentials.'
+        });
+      }
+
+      // If port 554, 8554, or user-specified customPort is open, connect directly via FFmpeg RTSP
+      const rtspFallbackPort = openPortsFound.find(p => p === 554 || p === 8554 || p === customPort);
+      if (rtspFallbackPort && !authFailedDetected) {
+        const p = rtspFallbackPort;
+        const defaultPath = '/Streaming/Channels/101';
+        const authPart = (username || password) ? `${encodeURIComponent(username)}:${encodeURIComponent(password)}@` : '';
+        const internalUrl = `rtsp://${authPart}${host}:${p}${defaultPath}`;
+        const camId = `CAM_${host.replace(/\./g, '_')}_${p}`;
+
+        try {
+          const existingCameras = db.getCameras(orgId);
+          for (const existing of existingCameras) {
+            rtspStreamManager.stopStream(existing.id);
+            db.removeCamera(orgId, existing.id);
+          }
+        } catch (_e) {}
+
+        const registered = db.registerCamera(orgId, {
+          id: camId,
+          name: `CCTV Camera (${host}:${p})`,
+          stream_url: internalUrl,
+          zone_name: 'SALES_FLOOR'
+        });
+        try {
+          if (typeof db.saveLocalCredentials === 'function') {
+            db.saveLocalCredentials({ username: username || '', password: password || '', ip: host, port: p, cameraId: camId });
+          }
+        } catch (_e) {}
+        try { rtspStreamManager.startStream(registered.id, registered.stream_url); } catch (_e) {}
+
+        const clientStreamUrl = `/api/cameras/${registered.id}/stream.mjpg`;
+        return res.json({
+          success: true, status: 'Connected', mode: 'RTSP',
+          message: `Connected to camera at ${host}:${p}! Initializing video stream...`,
+          camera: { ...registered, stream_url: clientStreamUrl },
+          streamUrl: clientStreamUrl
         });
       }
 
@@ -489,7 +576,7 @@ function createCameraDiscoveryRouter(options = {}) {
         const { pipeHttpCameraStream } = require('../services/http_camera_client');
         return pipeHttpCameraStream(shotUrl, res, req);
       }
-      rtspStreamManager.handleSnapshotRequest(req, res, req.params.id);
+      rtspStreamManager.handleSnapshotRequest(req, res, req.params.id, camera?.stream_url);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }

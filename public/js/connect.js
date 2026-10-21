@@ -658,6 +658,186 @@
     };
   }
 
+  // ── Snapshot Fallback Polling Engine ──────────────────────────────────────
+  let snapshotFallbackTimer = null;
+  let isUsingSnapshotFallback = false;
+  const discoveredHostsCache = [];
+
+  function stopSnapshotFallback() {
+    if (snapshotFallbackTimer) {
+      clearInterval(snapshotFallbackTimer);
+      snapshotFallbackTimer = null;
+    }
+    isUsingSnapshotFallback = false;
+  }
+
+  function startSnapshotFallback(cameraObj) {
+    if (snapshotFallbackTimer || !cameraObj) return;
+    isUsingSnapshotFallback = true;
+    console.log('[Connect] Activating real-time snapshot polling fallback for', cameraObj.id);
+    appendTerminalLine('Direct MJPEG stream pending. Fetching real-time JPEG frames from camera...', 'host');
+
+    const pollFrame = () => {
+      if (!activeCamera || activeCamera.id !== cameraObj.id) {
+        stopSnapshotFallback();
+        return;
+      }
+      const img = new Image();
+      img.onload = () => {
+        if (!activeCamera || activeCamera.id !== cameraObj.id) return;
+        cctvFeedImg.src = img.src;
+        cctvFeedImg.style.display = 'block';
+        cctvPlaceholder.style.display = 'none';
+        updateMonitorBadge('LIVE MONITORING', 'active');
+      };
+      img.src = `/api/cameras/${cameraObj.id}/snapshot.jpg?t=${Date.now()}`;
+    };
+
+    pollFrame();
+    snapshotFallbackTimer = setInterval(pollFrame, 500);
+  }
+
+  // ── Render Discovered Cameras & Candidate Hosts ───────────────────────────
+  function renderMatchedCamerasList(cameras, discoveredHosts, username, password) {
+    if (!matchedCamerasContainer || !matchedCamerasList) return;
+
+    if (Array.isArray(discoveredHosts)) {
+      for (const h of discoveredHosts) {
+        if (!discoveredHostsCache.some(existing => existing.ip === h.ip && existing.port === h.port)) {
+          discoveredHostsCache.push(h);
+        }
+      }
+    }
+
+    const verified = Array.isArray(cameras) ? cameras : [];
+    const allHosts = [...discoveredHostsCache];
+
+    if (verified.length === 0 && allHosts.length === 0) {
+      matchedCamerasContainer.style.display = 'none';
+      return;
+    }
+
+    matchedCamerasContainer.style.display = 'block';
+    matchedCamerasList.innerHTML = '';
+
+    // 1. Render Verified Cameras
+    verified.forEach(cam => {
+      const card = document.createElement('div');
+      card.className = 'camera-match-card';
+      card.innerHTML = `
+        <div class="camera-info">
+          <div class="camera-brand-tag">
+            <span class="dot"></span>
+            ${cam.brand || 'CCTV CAMERA'} • VERIFIED & READY
+          </div>
+          <div class="camera-title">${cam.name || `${cam.brand || 'Camera'} (${cam.ip})`}</div>
+          <div class="camera-rtsp-url">${cam.ip}:${cam.port || 554}</div>
+        </div>
+        <button type="button" class="btn-connect-cam">
+          ▶ View Live Stream
+        </button>
+      `;
+      card.querySelector('.btn-connect-cam').addEventListener('click', () => {
+        connectMatchedCamera(cam, username, password);
+      });
+      matchedCamerasList.appendChild(card);
+    });
+
+    // 2. Render Discovered Network Hosts
+    allHosts.forEach(host => {
+      if (verified.some(v => v.ip === host.ip)) return;
+
+      const card = document.createElement('div');
+      card.className = 'camera-match-card';
+      card.style.borderColor = 'rgba(245, 158, 11, 0.4)';
+      card.style.background = 'rgba(245, 158, 11, 0.05)';
+
+      const brandLabel = host.brand || host.service || 'CCTV Service';
+      card.innerHTML = `
+        <div class="camera-info">
+          <div class="camera-brand-tag" style="color:#f59e0b;">
+            <span class="dot" style="background:#f59e0b;"></span>
+            ${brandLabel} • PORT ${host.port || 554} OPEN
+          </div>
+          <div class="camera-title">${host.ip}:${host.port || 554}</div>
+          <div class="camera-rtsp-url">Detected IP on Local Network</div>
+        </div>
+        <button type="button" class="btn-connect-cam" style="background:#f59e0b; color:#000000; border-color:#f59e0b;">
+          ▶ Connect & Fetch Video
+        </button>
+      `;
+      card.querySelector('.btn-connect-cam').addEventListener('click', () => {
+        connectCandidateHost(host, username, password);
+      });
+      matchedCamerasList.appendChild(card);
+    });
+  }
+
+  async function connectCandidateHost(host, username, password) {
+    try {
+      appendTerminalLine(`Connecting to discovered camera at ${host.ip}:${host.port || 554}...`, 'host');
+      updateMonitorBadge('CONNECTING...', 'warning');
+
+      // 1. Try test-connect first
+      const testRes = await fetch('/api/cameras/test-connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ target: `${host.ip}:${host.port || 554}`, username, password })
+      });
+      const testData = await testRes.json();
+
+      if (testRes.ok && testData.success) {
+        appendTerminalLine(`✓ Connected: ${testData.message}`, 'success');
+        const camObj = {
+          id: testData.camera.id,
+          name: testData.camera.name || `CCTV (${host.ip})`,
+          ip: host.ip,
+          port: host.port || 554,
+          streamUrl: testData.streamUrl || `/api/cameras/${testData.camera.id}/stream.mjpg`
+        };
+        saveCredentials(username, password, camObj.ip, camObj.port, camObj.id);
+        attachLiveCameraStream(camObj);
+        return;
+      }
+
+      // 2. Direct RTSP stream registration fallback
+      appendTerminalLine(`Registering stream for ${host.ip}:${host.port || 554}...`, 'host');
+      const regRes = await fetch('/api/cameras/connect-matched', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id: `CAM_${host.ip.replace(/\./g, '_')}_${host.port || 554}`,
+          name: `${host.brand || 'CCTV Camera'} (${host.ip})`,
+          ip: host.ip,
+          port: host.port || 554,
+          username,
+          password,
+          streamType: (host.port === 8080 || host.port === 80) ? 'HTTP_MJPEG' : 'RTSP',
+          zoneName: 'SALES_FLOOR'
+        })
+      });
+      const regData = await regRes.json();
+
+      if (regRes.ok && regData.success) {
+        appendTerminalLine(`✓ Live stream ready: ${regData.streamUrl}`, 'success');
+        saveCredentials(username, password, host.ip, host.port || 554, regData.camera?.id);
+        attachLiveCameraStream({
+          id: regData.camera?.id || `CAM_${host.ip.replace(/\./g, '_')}_${host.port || 554}`,
+          name: `${host.brand || 'CCTV Camera'} (${host.ip})`,
+          ip: host.ip,
+          port: host.port || 554,
+          streamUrl: regData.streamUrl
+        });
+      } else {
+        appendTerminalLine(`Failed to fetch video: ${testData.error || regData.message || 'Stream handshake failed'}`, 'error');
+        updateMonitorBadge('CONNECT FAILED', 'error');
+      }
+    } catch (err) {
+      appendTerminalLine(`Connection error: ${err.message}`, 'error');
+      updateMonitorBadge('CONNECT ERROR', 'error');
+    }
+  }
+
   function handleBotEvent(event, username, password) {
     if (event.progress !== undefined) {
       updateProgress(event.progress);
@@ -676,17 +856,29 @@
       appendTerminalLine(event.message, typeClass);
     }
 
+    // When an active host is detected on the network, render it immediately
+    if (event.type === 'HOST_FOUND' && event.host) {
+      renderMatchedCamerasList([], [event.host], username, password);
+    }
+
     // Auto-connect first matched camera!
     if (event.type === 'CAMERA_MATCHED' && event.camera) {
+      renderMatchedCamerasList([event.camera], [], username, password);
       appendTerminalLine(`✓ Auto-connecting matched camera: ${event.camera.ip}:${event.camera.port}...`, 'success');
       connectMatchedCamera(event.camera, username, password);
     }
 
     if (event.type === 'SCAN_COMPLETED') {
       setScanningState(false);
+      renderMatchedCamerasList(event.cameras || [], event.discoveredHosts || [], username, password);
+
       if (event.cameras && event.cameras.length > 0 && !activeCamera) {
         connectMatchedCamera(event.cameras[0], username, password);
-      } else if (!event.cameras || event.cameras.length === 0) {
+      } else if (event.discoveredHosts && event.discoveredHosts.length > 0 && !activeCamera) {
+        const primaryHost = event.discoveredHosts[0];
+        appendTerminalLine(`✓ Found ${event.discoveredHosts.length} candidate CCTV host(s). Auto-connecting to ${primaryHost.ip}:${primaryHost.port || 554}...`, 'success');
+        connectCandidateHost(primaryHost, username, password);
+      } else if (!activeCamera) {
         appendTerminalLine('No hardware camera responded. Try entering a specific IP or use Demo Mode.', 'error');
         scanStatusText.textContent = 'SCAN COMPLETE - NO CAMERA FOUND';
         updateMonitorBadge('NO CAMERA FOUND', 'error');
@@ -702,7 +894,7 @@
 
   async function connectMatchedCamera(camera, username, password) {
     try {
-      appendTerminalLine(`Registering camera ${camera.brand} (${camera.ip}) into live surveillance...`, 'host');
+      appendTerminalLine(`Registering camera ${camera.brand || 'CCTV'} (${camera.ip}) into live surveillance...`, 'host');
       const res = await fetch('/api/cameras/connect-matched', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -743,6 +935,7 @@
   async function attachLiveCameraStream(cameraObj) {
     activeCamera = cameraObj;
     currentStreamType = 'mjpeg';
+    stopSnapshotFallback();
 
     // Stop any running webcam stream
     if (webcamStream) {
@@ -754,6 +947,31 @@
     cctvPlaceholder.style.display = 'none';
     cctvFeedVideo.style.display = 'none';
     cctvFeedImg.style.display = 'block';
+
+    let firstFrameLoaded = false;
+    cctvFeedImg.onload = () => {
+      firstFrameLoaded = true;
+      updateMonitorBadge('LIVE MONITORING', 'active');
+      headerStatusText.textContent = 'STREAMING LIVE • AI HUMAN BOT ACTIVE';
+      headerPulseDot.style.background = '#22c55e';
+      headerPulseDot.style.boxShadow = '0 0 10px #22c55e';
+    };
+
+    cctvFeedImg.onerror = () => {
+      console.warn('[Connect] cctvFeedImg error on stream URL:', cameraObj.streamUrl);
+      if (!isUsingSnapshotFallback) {
+        startSnapshotFallback(cameraObj);
+      }
+    };
+
+    // If no MJPEG frame renders within 3.5 seconds, activate snapshot fallback
+    setTimeout(() => {
+      if (!firstFrameLoaded && activeCamera && activeCamera.id === cameraObj.id && !isUsingSnapshotFallback) {
+        console.log('[Connect] MJPEG wait timeout reached; initiating snapshot fallback...');
+        startSnapshotFallback(cameraObj);
+      }
+    }, 3500);
+
     cctvFeedImg.src = cameraObj.streamUrl;
 
     osdCamLabel.textContent = `CAM-01 [${cameraObj.name.toUpperCase()}]`;
@@ -862,6 +1080,7 @@
     }
 
     stopDetectionLoop();
+    stopSnapshotFallback();
 
     cctvFeedImg.src = '';
     cctvFeedImg.style.display = 'none';

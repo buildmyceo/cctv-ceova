@@ -339,26 +339,86 @@
       overlayResultsList.appendChild(row);
     });
 
-    // 2. Render candidate hosts that failed verification
+    // 2. Render candidate hosts (discovered IP addresses with camera ports)
     hostList.forEach((h) => {
       const isAlreadyVerified = verifiedList.some((v) => v.ip === h.ip);
       if (isAlreadyVerified) return;
 
       const row = document.createElement('div');
-      row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#18181b; border:1px solid #27272a; border-radius:6px; padding:7px 10px; opacity:0.85;';
+      row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; background:#18181b; border:1px solid #27272a; border-radius:6px; padding:7px 10px; gap:8px;';
 
-      const statusColor = h.status === 'Authentication failed' ? '#f59e0b' : '#ef4444';
-      const statusText = h.status || 'Unreachable';
+      const statusColor = h.status === 'Authentication failed' ? '#f59e0b' : '#38bdf8';
+      const statusText = h.status || 'Active Host';
 
-      row.innerHTML = `
-        <div style="display:flex; flex-direction:column; gap:2px;">
-          <div style="font-size:0.8rem; font-weight:600; color:#e4e4e7; display:flex; align-items:center; gap:6px;">
-            <span style="width:6px; height:6px; border-radius:50%; background:${statusColor};"></span>
-            ${h.brand || 'Device'} (${h.ip}:${h.port || 554})
-          </div>
-          <div style="font-size:0.7rem; color:${statusColor}; font-family:'JetBrains Mono',monospace;">Status: ${statusText}</div>
+      const info = document.createElement('div');
+      info.style.cssText = 'display:flex; flex-direction:column; gap:2px;';
+      info.innerHTML = `
+        <div style="font-size:0.8rem; font-weight:600; color:#e4e4e7; display:flex; align-items:center; gap:6px;">
+          <span style="width:6px; height:6px; border-radius:50%; background:${statusColor};"></span>
+          ${h.brand || h.service || 'CCTV Service'} (${h.ip}:${h.port || 554})
         </div>
+        <div style="font-size:0.7rem; color:${statusColor}; font-family:'JetBrains Mono',monospace;">Port ${h.port || 554} Open • ${statusText}</div>
       `;
+
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = 'Connect & Stream';
+      btn.style.cssText = 'padding:5px 12px; font-size:0.75rem; font-weight:700; background:#f59e0b; color:#000000; border:none; border-radius:5px; cursor:pointer; white-space:nowrap;';
+      btn.addEventListener('click', async () => {
+        const username = overlayCctvUsername?.value.trim() || '';
+        const password = overlayCctvPassword?.value || '';
+        btn.disabled = true;
+        btn.textContent = 'Connecting...';
+        if (overlayBotStatusText) overlayBotStatusText.textContent = `Connecting to ${h.ip}:${h.port || 554}...`;
+
+        try {
+          const testRes = await fetch('/api/cameras/test-connect', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ target: `${h.ip}:${h.port || 554}`, username, password })
+          });
+          const testData = await testRes.json();
+          if (testRes.ok && testData.success) {
+            await refreshCameraSwitcher();
+            await switchCamera(testData.camera);
+            if (standbyOverlay) standbyOverlay.classList.add('hidden');
+            return;
+          }
+
+          // Direct RTSP fallback registration
+          const regRes = await fetch('/api/cameras/connect-matched', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              id: `CAM_${h.ip.replace(/\./g, '_')}_${h.port || 554}`,
+              name: `${h.brand || 'CCTV Camera'} (${h.ip})`,
+              ip: h.ip,
+              port: h.port || 554,
+              username,
+              password,
+              streamType: (h.port === 8080 || h.port === 80) ? 'HTTP_MJPEG' : 'RTSP',
+              zoneName: 'SALES_FLOOR'
+            })
+          });
+          const regData = await regRes.json();
+          if (regRes.ok && regData.success) {
+            await refreshCameraSwitcher();
+            await switchCamera(regData.camera);
+            if (standbyOverlay) standbyOverlay.classList.add('hidden');
+          } else {
+            alert(`Could not connect: ${testData.error || regData.message || 'Stream handshake failed'}`);
+            btn.disabled = false;
+            btn.textContent = 'Connect & Stream';
+          }
+        } catch (err) {
+          alert(`Connection error: ${err.message}`);
+          btn.disabled = false;
+          btn.textContent = 'Connect & Stream';
+        }
+      });
+
+      row.appendChild(info);
+      row.appendChild(btn);
       overlayResultsList.appendChild(row);
     });
   }
@@ -398,6 +458,7 @@
   // Switch Active Displayed Camera
   async function switchCamera(cam) {
     if (!cam) return;
+    if (typeof stopViewerSnapshotPolling === 'function') stopViewerSnapshotPolling();
     console.log('[Viewer] Switching to camera:', cam.name, cam.id);
 
     const isHttp = cam.stream_url && (
@@ -1111,10 +1172,20 @@
     startFpsMeter();
   }
 
+  let viewerSnapshotTimer = null;
+
+  function stopViewerSnapshotPolling() {
+    if (viewerSnapshotTimer) {
+      clearInterval(viewerSnapshotTimer);
+      viewerSnapshotTimer = null;
+    }
+  }
+
   // Display Live RTSP Video Stream
   function displayRtspStream(cameraId, cameraName = 'CCTV Camera', customStreamUrl = null) {
     const streamUrl = customStreamUrl || `/api/cameras/${cameraId}/stream.mjpg`;
     if (!fallbackImgFeed) return;
+    stopViewerSnapshotPolling();
 
     if (systemStatusText) systemStatusText.textContent = `CONNECTING: ${cameraName}...`;
     if (systemPulse) systemPulse.className = 'pulse-dot active';
@@ -1133,17 +1204,32 @@
     };
 
     fallbackImgFeed.onerror = () => {
-      console.warn(`[Viewer] Failed to load stream from ${streamUrl}`);
-      if (!firstFrameArrived) {
-        standbyOverlay.classList.remove('hidden');
-        if (overlayBotStatusText) {
-          overlayBotStatusText.textContent = `Stream connection failed for ${cameraName}. Check camera credentials & network.`;
-        }
-        if (overlayBotPulse) overlayBotPulse.style.background = '#ef4444';
-        if (systemStatusText) systemStatusText.textContent = `OFFLINE // ${cameraName}`;
-        if (systemPulse) systemPulse.className = 'pulse-dot';
+      console.warn(`[Viewer] Failed to load stream from ${streamUrl}, checking snapshot fallback...`);
+      if (!viewerSnapshotTimer) {
+        console.log(`[Viewer] Activating real-time snapshot fallback for ${cameraName}`);
+        viewerSnapshotTimer = setInterval(() => {
+          const snap = new Image();
+          snap.onload = () => {
+            fallbackImgFeed.src = snap.src;
+            firstFrameArrived = true;
+            standbyOverlay.classList.add('hidden');
+            if (systemStatusText) systemStatusText.textContent = `LIVE: ${cameraName}`;
+            if (systemPulse) systemPulse.className = 'pulse-dot online';
+            if (streamProtocolText) streamProtocolText.textContent = 'SNAPSHOT LIVE';
+            onStreamConnected('SNAPSHOT LIVE');
+          };
+          snap.src = `/api/cameras/${cameraId}/snapshot.jpg?t=${Date.now()}`;
+        }, 500);
       }
     };
+
+    // If no MJPEG frame arrives within 4 seconds, activate snapshot polling
+    setTimeout(() => {
+      if (!firstFrameArrived && !viewerSnapshotTimer) {
+        console.log(`[Viewer] MJPEG stream wait timeout reached for ${cameraName}; activating snapshot polling fallback...`);
+        fallbackImgFeed.onerror();
+      }
+    }, 4000);
 
     // Direct the fallback image to the live MJPEG stream
     fallbackImgFeed.src = streamUrl;

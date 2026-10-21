@@ -18,7 +18,9 @@ function computeDigestHeader(username, password, method, uri, authHeader, nc = '
   const re = /(\w+)=(?:\"([^\"]*)\"|([^,]*))/g;
   let match;
   while ((match = re.exec(authHeader)) !== null) {
-    params[match[1]] = match[2] || match[3];
+    const key = match[1].toLowerCase();
+    const val = (match[2] !== undefined ? match[2] : match[3] || '').replace(/^["']|["']$/g, '').trim();
+    params[key] = val;
   }
 
   const md5 = str => crypto.createHash('md5').update(str).digest('hex');
@@ -34,7 +36,7 @@ function computeDigestHeader(username, password, method, uri, authHeader, nc = '
   }
 
   let response;
-  if (qop === 'auth' || (qop && qop.includes('auth'))) {
+  if (qop && qop.toLowerCase().includes('auth')) {
     response = md5(`${ha1}:${nonce}:${nc}:${cnonce}:auth:${ha2}`);
   } else {
     response = md5(`${ha1}:${nonce}:${ha2}`);
@@ -270,9 +272,9 @@ function pipeHttpCameraStream(streamUrl, res, req) {
 
   const sock = new net.Socket();
   let state = 0; // 0: initial, 1: authenticating, 2: streaming
-  let headerBuf = '';
+  let accumulatedBuffer = Buffer.alloc(0);
 
-  sock.setTimeout(8000);
+  sock.setTimeout(12000);
   sock.on('timeout', () => {
     try { sock.destroy(); } catch (_) {}
     if (!res.headersSent) res.status(504).json({ error: 'Camera connection timed out' });
@@ -298,22 +300,22 @@ function pipeHttpCameraStream(streamUrl, res, req) {
       return;
     }
 
-    headerBuf += chunk.toString('latin1');
-    const headerEnd = headerBuf.indexOf('\r\n\r\n');
+    accumulatedBuffer = Buffer.concat([accumulatedBuffer, chunk]);
+    const headerEnd = accumulatedBuffer.indexOf(Buffer.from('\r\n\r\n'));
     if (headerEnd === -1) return;
 
-    const rawHeaders = headerBuf.slice(0, headerEnd);
+    const rawHeaders = accumulatedBuffer.slice(0, headerEnd).toString('latin1');
     const firstLine = rawHeaders.split('\r\n')[0] || '';
     const statusCode = parseInt(firstLine.split(' ')[1], 10);
 
     // Digest Challenge
-    if (statusCode === 401 && state === 0 && headerBuf.toLowerCase().includes('digest') && (username || password)) {
+    if (statusCode === 401 && state === 0 && rawHeaders.toLowerCase().includes('digest') && (username || password)) {
       state = 1;
       const authHdr = computeDigestHeader(username, password, 'GET', targetPath, rawHeaders);
       try { sock.destroy(); } catch (_) {}
 
       const authSock = new net.Socket();
-      authSock.setTimeout(8000);
+      authSock.setTimeout(12000);
       authSock.on('timeout', () => {
         try { authSock.destroy(); } catch (_) {}
         if (!res.headersSent) res.status(504).json({ error: 'Camera connection timed out' });
@@ -326,7 +328,7 @@ function pipeHttpCameraStream(streamUrl, res, req) {
         try { authSock.destroy(); } catch (_) {}
       });
 
-      let aBuf = '';
+      let aAccumulated = Buffer.alloc(0);
       let aStreaming = false;
 
       authSock.connect(port, host, () => {
@@ -340,11 +342,11 @@ function pipeHttpCameraStream(streamUrl, res, req) {
           return;
         }
 
-        aBuf += cChunk.toString('latin1');
-        const aEnd = aBuf.indexOf('\r\n\r\n');
+        aAccumulated = Buffer.concat([aAccumulated, cChunk]);
+        const aEnd = aAccumulated.indexOf(Buffer.from('\r\n\r\n'));
         if (aEnd === -1) return;
 
-        const aHeaders = aBuf.slice(0, aEnd);
+        const aHeaders = aAccumulated.slice(0, aEnd).toString('latin1');
         const aLine = aHeaders.split('\r\n')[0] || '';
         const aCode = parseInt(aLine.split(' ')[1], 10);
 
@@ -371,7 +373,7 @@ function pipeHttpCameraStream(streamUrl, res, req) {
             'Connection': 'keep-alive'
           });
 
-          const rem = cChunk.slice(Buffer.from(aHeaders, 'latin1').length + 4);
+          const rem = aAccumulated.slice(aEnd + 4);
           if (rem.length > 0) res.write(rem);
         } else {
           try { authSock.destroy(); } catch (_) {}
@@ -406,7 +408,7 @@ function pipeHttpCameraStream(streamUrl, res, req) {
         'Connection': 'keep-alive'
       });
 
-      const remainingBody = chunk.slice(Buffer.from(rawHeaders, 'latin1').length + 4);
+      const remainingBody = accumulatedBuffer.slice(headerEnd + 4);
       if (remainingBody.length > 0) {
         res.write(remainingBody);
       }

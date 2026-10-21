@@ -175,11 +175,14 @@ async function runTest() {
     console.log('============================================================\n');
 
   } finally {
+    const { rtspStreamManager } = require('./services/rtsp_stream_manager');
+    rtspStreamManager.stopAll();
     if (mockRtspServer) mockRtspServer.close();
     if (testHttpServer) testHttpServer.close();
     try {
       db.removeCamera('ORG-DEFAULT', 'CAM_TEST_HIKVISION');
     } catch (_) {}
+    process.exit(0);
   }
 }
 

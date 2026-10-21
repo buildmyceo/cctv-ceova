@@ -248,6 +248,7 @@ class CameraDiscoveryBot extends BaseBot {
           message: '🔍 Step 1: Broadcasting to awaken and detect all live IP addresses on the Wi-Fi network...'
         });
         const wifiLiveIps = await this._discoverAllWifiIpAddresses(subnets);
+        this._lastWifiIps = wifiLiveIps;
         this.emitUpdate('STEP', {
           message: `✓ Discovered ${wifiLiveIps.length} active device(s) on Wi-Fi (${wifi?.interfaceName || 'en0'}): ${wifiLiveIps.slice(0, 10).join(', ')}${wifiLiveIps.length > 10 ? ' ... and ' + (wifiLiveIps.length - 10) + ' more' : ''}`
         });
@@ -808,9 +809,12 @@ class CameraDiscoveryBot extends BaseBot {
       aliveIps.add(onvifIp);
     }
 
-    // High-priority devices (ARP neighbors & ONVIF devices) get all 45 ports
+    // High-priority devices (all detected Wi-Fi devices, ARP neighbors & ONVIF devices) get all 45 ports
     const arpSet = new Set(this._getArpNeighbors());
     for (const [onvifIp] of onvifMap.entries()) arpSet.add(onvifIp);
+    if (this._lastWifiIps && Array.isArray(this._lastWifiIps)) {
+      for (const wip of this._lastWifiIps) arpSet.add(wip);
+    }
 
     // Common top ports for general subnet IP sweep
     const QUICK_SUBSET_PORTS = [
@@ -828,7 +832,7 @@ class CameraDiscoveryBot extends BaseBot {
     }
 
     const concurrency = Math.max(100, this.config.maxConcurrentSockets || 120);
-    const sweepTimeout = 200;
+    const sweepTimeout = 600;
     let completedPhase1 = 0;
 
     for (let i = 0; i < phase1Targets.length; i += concurrency) {
@@ -927,7 +931,7 @@ class CameraDiscoveryBot extends BaseBot {
   /**
    * Fast TCP port check using raw socket
    */
-  _checkPortOpen(host, port, timeoutMs = 250) {
+  _checkPortOpen(host, port, timeoutMs = 450) {
     return new Promise((resolve) => {
       const socket = new net.Socket();
       socket.setTimeout(timeoutMs);
@@ -968,11 +972,49 @@ class CameraDiscoveryBot extends BaseBot {
     const HTTP_ONLY_PORTS = new Set([80, 443, 8080, 8081, 8088, 5000, 5800, 3000, 3001, 6000, 7000]);
 
     const RTSP_PATHS = [
-      '/Streaming/Channels/101', '/cam/realmonitor?channel=1&subtype=0',
-      '/h264Preview_01_main', '/live', '/stream1', '/ch0', '/onvif1',
-      '/h264_pcm.sdp', '/', '/ch01/0', '/unicast/c1/s0/live',
-      '/Streaming/Channels/1', '/h264/ch1/main/av_stream',
-      '/h264Preview_01_sub', '/stream2', '/onvif2', '/media/video1', '/video1'
+      // Hikvision / Hilook / Annke / Ezviz
+      '/Streaming/Channels/101',
+      '/Streaming/Channels/102',
+      '/Streaming/Channels/1',
+      '/h264/ch1/main/av_stream',
+      '/h264/ch1/sub/av_stream',
+
+      // Dahua / CP Plus / Amcrest / Lorex / IMOU
+      '/cam/realmonitor?channel=1&subtype=0',
+      '/cam/realmonitor?channel=1&subtype=1',
+      '/live',
+      '/ch01/0',
+
+      // TP-Link Tapo / Kasa
+      '/stream1',
+      '/stream2',
+
+      // Xiongmai (XM) / NetSurveillance / Tuya / Goke / Anyka
+      '/live/ch0',
+      '/ch0',
+      '/ch0_0',
+      '/media/video1',
+      '/media/video2',
+
+      // Reolink
+      '/h264Preview_01_main',
+      '/h264Preview_01_sub',
+      '/Preview_01_main',
+
+      // Uniview
+      '/unicast/c1/s0/live',
+
+      // IP Webcam / Phone camera
+      '/h264_pcm.sdp',
+      '/video',
+      '/shot.jpg',
+
+      // Generic ONVIF / RTSP
+      '/onvif1',
+      '/onvif2',
+      '/video1',
+      '/live.sdp',
+      '/'
     ];
 
     let progressIndex = 0;
@@ -990,19 +1032,29 @@ class CameraDiscoveryBot extends BaseBot {
 
       const tasks = [];
 
-      // 1. Parallel RTSP Probe (all candidate camera ports except plain web 80/443)
+      // 1. Batched RTSP Probe (groups of 4 paths at a time to prevent camera socket exhaustion)
       const tryRtsp = host.port !== 80 && host.port !== 443;
       if (tryRtsp) {
-        const rtspTask = Promise.any(
-          RTSP_PATHS.map(path =>
-            this._testRtspHandshake(host.ip, host.port, path, username, password)
-              .then(r => {
-                if (r.success) return { type: 'RTSP', path, result: r };
-                if (r.status === 'AUTH_FAILED') { hostAuthFailed = true; }
-                return Promise.reject(new Error('not matched'));
-              })
-          )
-        ).catch(() => null);
+        const rtspTask = (async () => {
+          const batchSize = 4;
+          for (let b = 0; b < RTSP_PATHS.length; b += batchSize) {
+            if (this.stopRequested) break;
+            const batch = RTSP_PATHS.slice(b, b + batchSize);
+            const batchResults = await Promise.all(
+              batch.map(path =>
+                this._testRtspHandshake(host.ip, host.port, path, username, password)
+                  .then(r => {
+                    if (r.success) return { type: 'RTSP', path, result: r };
+                    if (r.status === 'AUTH_FAILED') { hostAuthFailed = true; }
+                    return null;
+                  }).catch(() => null)
+              )
+            );
+            const found = batchResults.find(r => r !== null);
+            if (found) return found;
+          }
+          return null;
+        })();
         tasks.push(rtspTask);
       }
 
@@ -1144,14 +1196,15 @@ class CameraDiscoveryBot extends BaseBot {
   _testRtspHandshake(host, port, path, username, password) {
     return new Promise((resolve) => {
       const startTime = Date.now();
-      const socket = new net.Socket();
-      socket.setTimeout(this.config.rtspTimeoutMs || 2000);
+      const timeoutMs = Math.max(3500, this.config.rtspTimeoutMs || 3500);
+      let socket = new net.Socket();
+      socket.setTimeout(timeoutMs);
       let resolved = false;
 
       const finish = (result) => {
         if (resolved) return;
         resolved = true;
-        socket.destroy();
+        try { socket.destroy(); } catch (_) {}
         resolve(result);
       };
 
@@ -1159,15 +1212,63 @@ class CameraDiscoveryBot extends BaseBot {
       let authPhase = 'initial'; // 'initial' | 'digest' | 'basic'
       const uri = `rtsp://${host}:${port}${path}`;
 
-      // Step 1: DESCRIBE with NO auth (solicit challenge)
-      const initialReq =
-        `DESCRIBE ${uri} RTSP/1.0\r\n` +
-        `CSeq: 1\r\n` +
-        `User-Agent: CEOVA-DiscoveryBot/1.0\r\n` +
-        `Accept: application/sdp\r\n\r\n`;
+      const sendDescribe = (sock, authHeader = null, cseq = 1) => {
+        let req =
+          `DESCRIBE ${uri} RTSP/1.0\r\n` +
+          `CSeq: ${cseq}\r\n` +
+          `User-Agent: CEOVA-DiscoveryBot/1.0\r\n` +
+          `Accept: application/sdp\r\n`;
+        if (authHeader) {
+          req += `Authorization: ${authHeader}\r\n`;
+        }
+        req += '\r\n';
+        sock.write(req);
+      };
+
+      const handleSecondSocket = (authHeader, authType) => {
+        const retrySocket = new net.Socket();
+        retrySocket.setTimeout(timeoutMs);
+        let retryBuf = '';
+
+        retrySocket.on('connect', () => {
+          sendDescribe(retrySocket, authHeader, 2);
+        });
+
+        retrySocket.on('data', (dChunk) => {
+          retryBuf += dChunk.toString();
+          if (!retryBuf.includes('\r\n\r\n')) return;
+          try { retrySocket.destroy(); } catch (_) {}
+
+          if (retryBuf.includes('RTSP/1.0 200') || retryBuf.includes('RTSP/2.0 200')) {
+            finish({
+              success: true,
+              isRtsp: true,
+              authType,
+              latencyMs: Date.now() - startTime,
+              path
+            });
+          } else if (retryBuf.includes('401')) {
+            finish({ success: false, isRtsp: true, status: 'AUTH_FAILED', reason: `401 Unauthorized after ${authType} auth` });
+          } else {
+            finish({ success: false, isRtsp: true, status: 'UNSUPPORTED', reason: `Non-200 after ${authType} auth` });
+          }
+        });
+
+        retrySocket.on('error', () => {
+          try { retrySocket.destroy(); } catch (_) {}
+          finish({ success: false, isRtsp: true, status: 'AUTH_FAILED', reason: 'Socket error on retry' });
+        });
+
+        retrySocket.on('timeout', () => {
+          try { retrySocket.destroy(); } catch (_) {}
+          finish({ success: false, isRtsp: true, status: 'AUTH_FAILED', reason: 'Timeout on retry' });
+        });
+
+        retrySocket.connect(port, host);
+      };
 
       socket.on('connect', () => {
-        socket.write(initialReq);
+        sendDescribe(socket, null, 1);
       });
 
       socket.on('data', (chunk) => {
@@ -1180,28 +1281,32 @@ class CameraDiscoveryBot extends BaseBot {
 
         // === Check for 200 OK at any phase ===
         if (responseBuffer.includes('RTSP/1.0 200') || responseBuffer.includes('RTSP/2.0 200')) {
-          finish({
+          return finish({
             success: true,
             isRtsp: true,
             authType: authPhase === 'digest' ? 'Digest' : (authPhase === 'basic' ? 'Basic' : 'None'),
-            latencyMs: Date.now() - startTime
+            latencyMs: Date.now() - startTime,
+            path
           });
-          return;
         }
 
         // === Phase: Initial (no auth sent yet) ===
         if (authPhase === 'initial' && responseBuffer.includes('401')) {
-          // Try Digest first if the camera offers it
-          if (responseBuffer.includes('WWW-Authenticate: Digest') || responseBuffer.includes('WWW-Authenticate:Digest')) {
-            const realmMatch = responseBuffer.match(/realm="([^"]+)"/);
-            const nonceMatch = responseBuffer.match(/nonce="([^"]+)"/);
-            const qopMatch = responseBuffer.match(/qop="?([^",\s]+)"?/i);
+          const authMatch = responseBuffer.match(/www-authenticate:\s*([^\r\n]+)/i);
+
+          if (authMatch && /digest/i.test(authMatch[1])) {
+            const rawChallenge = authMatch[1];
+            const realmMatch = rawChallenge.match(/realm=["']?([^"',\r\n]+)["']?/i);
+            const nonceMatch = rawChallenge.match(/nonce=["']?([^"',\r\n]+)["']?/i);
+            const qopMatch = rawChallenge.match(/qop=["']?([^"',\r\n]+)["']?/i);
+            const opaqueMatch = rawChallenge.match(/opaque=["']?([^"',\r\n]+)["']?/i);
 
             if (realmMatch && nonceMatch) {
               authPhase = 'digest';
               const realm = realmMatch[1];
               const nonce = nonceMatch[1];
               const qop = qopMatch ? qopMatch[1] : null;
+              const opaque = opaqueMatch ? opaqueMatch[1] : null;
 
               const ha1 = crypto.createHash('md5').update(`${username}:${realm}:${password}`).digest('hex');
               const ha2 = crypto.createHash('md5').update(`DESCRIBE:${uri}`).digest('hex');
@@ -1216,15 +1321,19 @@ class CameraDiscoveryBot extends BaseBot {
                 const digestResp = crypto.createHash('md5').update(`${ha1}:${nonce}:${ha2}`).digest('hex');
                 authHeader = `Digest username="${username}", realm="${realm}", nonce="${nonce}", uri="${uri}", response="${digestResp}"`;
               }
+              if (opaque) {
+                authHeader += `, opaque="${opaque}"`;
+              }
 
               responseBuffer = '';
-              socket.write(
-                `DESCRIBE ${uri} RTSP/1.0\r\n` +
-                `CSeq: 2\r\n` +
-                `Authorization: ${authHeader}\r\n` +
-                `User-Agent: CEOVA-DiscoveryBot/1.0\r\n` +
-                `Accept: application/sdp\r\n\r\n`
-              );
+              socket.setTimeout(timeoutMs);
+
+              if (socket.destroyed || socket.writableEnded) {
+                handleSecondSocket(authHeader, 'Digest');
+                return;
+              }
+
+              sendDescribe(socket, authHeader, 2);
               return;
             }
           }
@@ -1232,28 +1341,28 @@ class CameraDiscoveryBot extends BaseBot {
           // Camera returned 401 with Basic challenge, or bare 401 with no WWW-Authenticate → try Basic
           authPhase = 'basic';
           const basicAuth = Buffer.from(`${username}:${password}`).toString('base64');
+          const authHeader = `Basic ${basicAuth}`;
           responseBuffer = '';
-          socket.write(
-            `DESCRIBE ${uri} RTSP/1.0\r\n` +
-            `CSeq: 2\r\n` +
-            `Authorization: Basic ${basicAuth}\r\n` +
-            `User-Agent: CEOVA-DiscoveryBot/1.0\r\n` +
-            `Accept: application/sdp\r\n\r\n`
-          );
+          socket.setTimeout(timeoutMs);
+
+          if (socket.destroyed || socket.writableEnded) {
+            handleSecondSocket(authHeader, 'Basic');
+            return;
+          }
+
+          sendDescribe(socket, authHeader, 2);
           return;
         }
 
         // === Phase: After Digest or Basic retry ===
         if (authPhase === 'digest' || authPhase === 'basic') {
           if (responseBuffer.includes('401')) {
-            finish({ success: false, isRtsp: speaksRtsp, status: 'AUTH_FAILED', reason: `401 Unauthorized after ${authPhase} auth (wrong credentials)` });
+            return finish({ success: false, isRtsp: speaksRtsp, status: 'AUTH_FAILED', reason: `401 Unauthorized after ${authPhase} auth (wrong credentials)` });
           } else {
-            finish({ success: false, isRtsp: speaksRtsp, status: 'UNSUPPORTED', reason: `Non-200 after ${authPhase} auth` });
+            return finish({ success: false, isRtsp: speaksRtsp, status: 'UNSUPPORTED', reason: `Non-200 after ${authPhase} auth` });
           }
-          return;
         }
 
-        // === Fallback: any other initial non-200 non-401 ===
         finish({ success: false, isRtsp: speaksRtsp, status: 'UNSUPPORTED', reason: 'Non-200/401 response' });
       });
 
@@ -1262,11 +1371,15 @@ class CameraDiscoveryBot extends BaseBot {
       });
 
       socket.on('close', () => {
-        finish({ success: false, isRtsp: false, status: 'UNSUPPORTED', reason: 'Socket closed' });
+        if (authPhase === 'initial') {
+          finish({ success: false, isRtsp: false, status: 'UNSUPPORTED', reason: 'Socket closed' });
+        }
       });
 
       socket.on('error', (err) => {
-        finish({ success: false, status: 'ERROR', reason: err.message || 'Connection error' });
+        if (authPhase === 'initial') {
+          finish({ success: false, status: 'ERROR', reason: err.message || 'Connection error' });
+        }
       });
 
       socket.connect(port, host);
