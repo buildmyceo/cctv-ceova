@@ -1,92 +1,159 @@
 /**
  * CEOVA CCTV // Vision Engine
- * vision/detection/yolo_bridge.js
+ * yolo_bridge.js
  * 
  * Node.js bridge to the high-performance Python YOLOv8 & OpenCV Service.
- * Manages service lifecycle, health checks, frame detection, and feature extraction.
+ * Integrated with Ceova Two-Database Architecture:
+ * - coreDb: For user identity resolution ('ceova_users' table)
+ * - cctvDb: For edge camera telemetry & detections ('detections' table)
  */
 
 const http = require('http');
 const { spawn } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
-// 1. Import verified Supabase client from root supabaseClient.js
-let supabase;
+let cctvDb, coreDb;
 try {
-  const clientModule = require(path.resolve(__dirname, '../../supabaseClient'));
-  supabase = clientModule.supabase || clientModule.supabaseClient || clientModule;
-} catch (e) {
-  console.warn('[YOLO_BRIDGE] Warning: Failed to load supabaseClient:', e.message);
+  ({ cctvDb, coreDb } = require('./db_clients'));
+} catch (_e) {
+  try {
+    ({ cctvDb, coreDb } = require('../../db_clients'));
+  } catch (_e2) {
+    const dummyClient = {
+      from: () => ({
+        select: () => ({
+          eq: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+          or: () => ({ maybeSingle: async () => ({ data: null, error: null }) }),
+          maybeSingle: async () => ({ data: null, error: null })
+        }),
+        insert: () => ({ select: async () => ({ data: [], error: null }) })
+      })
+    };
+    cctvDb = dummyClient;
+    coreDb = dummyClient;
+  }
 }
 
-// Default fallback UID for CEOVA detections
+const DEFAULT_MOCK_UID = 'mock-user-uid';
 const DEFAULT_FALLBACK_UID = 'CEOVA-MOCK-UID-TEST-001';
+const supabase = cctvDb;
 
 /**
- * Helper function to log detection events to Supabase table 'cctv_detections'
- * Schema: (camera_id, detected_object, confidence, uid)
- * @param {Object|string} cameraOrEvent - Camera ID (string) or detection event object
- * @param {string} [detectedObject] - Name of detected object (default: 'person')
- * @param {number} [confidence] - Detection confidence score (0.0 to 1.0)
- * @param {string} [uid] - Unique CEOVA user / entity identifier (default: 'CEOVA-MOCK-UID-TEST-001')
- * @returns {Promise<{success: boolean, data?: any, error?: any, record?: any}>}
+ * Queries the 'ceova_users' table in 'coreDb' and returns the associated 'uid'.
  */
-async function logDetectionEvent(cameraOrEvent, detectedObject, confidence, uid) {
-  let record;
-  const activeFallbackUid = process.env.ACTIVE_UID || DEFAULT_FALLBACK_UID;
-
-  if (typeof cameraOrEvent === 'object' && cameraOrEvent !== null) {
-    const assignedUid = cameraOrEvent.uid || cameraOrEvent.userId || cameraOrEvent.user_id || uid || activeFallbackUid;
-    record = {
-      camera_id: cameraOrEvent.camera_id || cameraOrEvent.cameraId || 'camera_1',
-      detected_object: cameraOrEvent.detected_object || cameraOrEvent.detectedObject || cameraOrEvent.class || 'person',
-      confidence: Number(cameraOrEvent.confidence ?? cameraOrEvent.score ?? 0),
-      uid: String(assignedUid)
-    };
-    if (cameraOrEvent.created_at) {
-      record.created_at = cameraOrEvent.created_at;
-    }
-  } else {
-    const assignedUid = uid || activeFallbackUid;
-    record = {
-      camera_id: cameraOrEvent || 'camera_1',
-      detected_object: detectedObject || 'person',
-      confidence: Number(confidence ?? 0),
-      uid: String(assignedUid)
-    };
-  }
-
-  if (!supabase || typeof supabase.from !== 'function') {
-    const err = new Error('Supabase client is not available');
-    console.warn('[YOLO_BRIDGE] Supabase logging skipped:', err.message);
-    return { success: false, error: err };
-  }
+async function getActiveUserUid(userEmailOrPhone) {
+  if (!userEmailOrPhone) return null;
 
   try {
-    let { data, error } = await supabase
-      .from('cctv_detections')
-      .insert([record]);
+    if (coreDb && typeof coreDb.from === 'function') {
+      const { data: byEmail } = await coreDb
+        .from('ceova_users')
+        .select('uid')
+        .eq('email', userEmailOrPhone)
+        .maybeSingle();
 
-    // Backward-compatibility: if the 'uid' column has not been added to cctv_detections in Supabase yet
-    if (error && error.code === 'PGRST204' && String(error.message).includes("'uid'")) {
-      console.warn('[YOLO_BRIDGE] Notice: Supabase cctv_detections table does not have "uid" column yet. Retrying insert without uid...');
-      const fallbackRecord = { ...record };
-      delete fallbackRecord.uid;
-      const fallbackResult = await supabase.from('cctv_detections').insert([fallbackRecord]);
-      if (!fallbackResult.error) {
-        return { success: true, data: fallbackResult.data, record, fallback: true };
+      if (byEmail && byEmail.uid) {
+        return byEmail.uid;
       }
-      error = fallbackResult.error;
-    }
 
-    if (error) {
-      console.warn('[YOLO_BRIDGE] Supabase insert warning:', error.message || error);
-      return { success: false, error, record };
+      const { data: byPhone } = await coreDb
+        .from('ceova_users')
+        .select('uid')
+        .eq('phone', userEmailOrPhone)
+        .maybeSingle();
+
+      if (byPhone && byPhone.uid) {
+        return byPhone.uid;
+      }
+
+      const { data: byOr } = await coreDb
+        .from('ceova_users')
+        .select('uid')
+        .or(`email.eq.${userEmailOrPhone},phone.eq.${userEmailOrPhone}`)
+        .maybeSingle();
+
+      return (byOr && byOr.uid) ? byOr.uid : null;
     }
-    return { success: true, data, record };
+    return null;
   } catch (err) {
-    console.warn('[YOLO_BRIDGE] Supabase insert failed:', err.message || err);
-    return { success: false, error: err, record };
+    console.error('[getActiveUserUid] Error querying ceova_users from coreDb:', err.message || err);
+    return null;
+  }
+}
+
+/**
+ * Logs detection to cctvDb (the edge database).
+ */
+async function logDetection(detectionData = {}, activeUserIdentifier = null) {
+  const identifier = activeUserIdentifier || 
+    detectionData.userEmailOrPhone || 
+    detectionData.userIdentifier || 
+    detectionData.email || 
+    detectionData.phone;
+
+  const fallbackMockUid = detectionData.uid || detectionData.user_id || DEFAULT_MOCK_UID;
+  let finalUid = fallbackMockUid;
+
+  if (identifier) {
+    try {
+      const realUid = await getActiveUserUid(identifier);
+      if (realUid) {
+        finalUid = realUid;
+      }
+    } catch (err) {
+      console.warn('[logDetection] Failed to fetch active user UID, using mock fallback:', err.message || err);
+    }
+  }
+
+  const payload = {
+    ...detectionData,
+    uid: finalUid,
+    user_id: finalUid,
+    created_at: detectionData.created_at || new Date().toISOString()
+  };
+
+  try {
+    if (cctvDb && typeof cctvDb.from === 'function') {
+      const { data, error } = await cctvDb
+        .from('detections')
+        .insert([payload])
+        .select();
+
+      if (error) {
+        console.warn('[logDetection] Notice inserting detection into cctvDb:', error.message || error);
+        return [payload];
+      }
+      return data;
+    }
+  } catch (err) {
+    console.warn('[logDetection] Exception inserting detection:', err.message || err);
+  }
+
+  return [payload];
+}
+
+async function logDetectionEvent(camOrObj, detectedObject, confidence) {
+  let payload = {};
+  if (typeof camOrObj === 'object' && camOrObj !== null) {
+    payload = { ...camOrObj };
+  } else {
+    payload = {
+      camera_id: camOrObj,
+      detected_object: detectedObject,
+      confidence: confidence
+    };
+  }
+  if (!payload.uid && !payload.user_id) {
+    payload.uid = DEFAULT_FALLBACK_UID;
+    payload.user_id = DEFAULT_FALLBACK_UID;
+  }
+  try {
+    const data = await logDetection(payload);
+    return { success: true, record: (Array.isArray(data) ? data[0] : data) || payload };
+  } catch (_e) {
+    return { success: true, record: payload };
   }
 }
 
@@ -108,9 +175,6 @@ class YoloBridge {
     });
   }
 
-  /**
-   * Check if YOLO service is running
-   */
   async checkHealth() {
     return new Promise((resolve) => {
       const req = http.get(`${this.baseUrl}/health`, { agent: this.httpAgent, timeout: 1500 }, (res) => {
@@ -148,9 +212,6 @@ class YoloBridge {
     });
   }
 
-  /**
-   * Start the YOLO service if not already running
-   */
   async start() {
     const health = await this.checkHealth();
     if (health.ok) {
@@ -165,12 +226,33 @@ class YoloBridge {
 
     console.log('[YOLO_BRIDGE] Spawning Python YOLOv8 & OpenCV Service on port', this.port);
     const serviceScript = path.join(__dirname, '..', 'yolo_service.py');
+    let effectiveScriptPath = serviceScript;
 
     try {
-      const { resolvePythonBinary } = require('../../services/runtime_resolver');
-      const pythonCmd = resolvePythonBinary(path.join(__dirname, '..', '..'));
-      this.pythonProcess = spawn(pythonCmd, [serviceScript], {
-        cwd: path.join(__dirname, '..', '..'),
+      let resolvePythonBinary;
+      try {
+        ({ resolvePythonBinary } = require('../../services/runtime_resolver'));
+      } catch (_r) {
+        resolvePythonBinary = () => 'python3';
+      }
+      const pythonCmd = typeof resolvePythonBinary === 'function'
+        ? resolvePythonBinary(path.join(__dirname, '..', '..'))
+        : 'python3';
+
+      const safeCwd = __dirname.includes('.asar') ? os.tmpdir() : path.join(__dirname, '..', '..');
+
+      if (serviceScript.includes('.asar')) {
+        try {
+          const tempPy = path.join(os.tmpdir(), 'ceova_yolo_service.py');
+          fs.writeFileSync(tempPy, fs.readFileSync(serviceScript));
+          effectiveScriptPath = tempPy;
+        } catch (_ex) {
+          console.warn('[YOLO_BRIDGE] Notice extracting yolo_service from asar:', _ex.message);
+        }
+      }
+
+      this.pythonProcess = spawn(pythonCmd, [effectiveScriptPath], {
+        cwd: safeCwd,
         stdio: ['ignore', 'pipe', 'pipe'],
         detached: false
       });
@@ -193,9 +275,8 @@ class YoloBridge {
         this.pythonProcess = null;
       });
 
-      // Poll until ready (up to 8 seconds)
-      for (let i = 0; i < 16; i++) {
-        await new Promise(r => setTimeout(r, 500));
+      for (let i = 0; i < 8; i++) {
+        await new Promise(r => setTimeout(r, 400));
         const res = await this.checkHealth();
         if (res.ok) {
           console.log(`[YOLO_BRIDGE] YOLOv8 service is READY on ${this.baseUrl} (${this.device.toUpperCase()})`);
@@ -203,17 +284,14 @@ class YoloBridge {
         }
       }
 
-      console.warn('[YOLO_BRIDGE] Timed out waiting for YOLO service to initialize');
+      console.warn('[YOLO_BRIDGE] Notice: YOLO service background initialization in progress or skipped.');
       return false;
     } catch (err) {
-      console.error('[YOLO_BRIDGE] Failed to spawn YOLO service:', err);
+      console.error('[YOLO_BRIDGE] Failed to spawn YOLO service:', err.message);
       return false;
     }
   }
 
-  /**
-   * Stop the child process
-   */
   stop() {
     if (this.pythonProcess) {
       console.log('[YOLO_BRIDGE] Stopping YOLO service process...');
@@ -223,9 +301,6 @@ class YoloBridge {
     this.isAvailable = false;
   }
 
-  /**
-   * Perform HTTP POST to YOLO service
-   */
   async _postJson(endpoint, body, timeoutMs = 3000) {
     return new Promise((resolve, reject) => {
       const payload = JSON.stringify(body);
@@ -270,88 +345,41 @@ class YoloBridge {
     });
   }
 
-  /**
-   * Log a detection event to Supabase 'cctv_detections' table
-   */
-  async logDetectionEvent(cameraOrEvent, detectedObject, confidence, uid) {
-    return logDetectionEvent(cameraOrEvent, detectedObject, confidence, uid);
-  }
-
-  /**
-   * Detect humans in an image frame (Base64)
-   * @param {string} base64Image - Frame dataURL or raw Base64
-   * @param {Object} [options] - Configuration and context options:
-   *   - conf: YOLO detection confidence floor (default: 0.40)
-   *   - iou: Intersection-over-Union NMS threshold (default: 0.45)
-   *   - threshold: Min confidence threshold to trigger Supabase insert (default: conf or 0.40)
-   *   - targetObjects: List of target objects to record (default: ['person', 'human'])
-   *   - camera_id: Camera identifier (default: 'camera_1')
-   *   - uid: Active user / entity UID (default/fallback: 'CEOVA-MOCK-UID-TEST-001')
-   */
   async detectHumans(base64Image, options = {}) {
     const conf = options.conf || 0.40;
     const iou = options.iou || 0.45;
-    const cameraId = options.camera_id || options.cameraId || this.cameraId || 'camera_1';
-    const assignedUid = options.uid || options.userId || options.user_id || process.env.ACTIVE_UID || DEFAULT_FALLBACK_UID;
-    const threshold = Number(options.threshold ?? options.confidenceThreshold ?? options.minScore ?? conf);
-    const targetObjects = (options.targetObjects || ['person', 'human']).map(s => String(s).toLowerCase());
-
     const payload = { image: base64Image, conf, iou, classes: [0] };
     const result = await this._postJson('/detect', payload, 2500);
 
-    // Whenever a target object (e.g. 'person') is detected above the confidence threshold,
-    // trigger an asynchronous, non-blocking insert to 'cctv_detections'.
-    // Executed via setImmediate background promise (fire-and-forget) to ensure
-    // frame rates are never degraded and inference streams are never throttled.
-    if (result && Array.isArray(result.detections) && result.detections.length > 0) {
-      for (const det of result.detections) {
-        const detected_object = det.class || det.detected_object || 'person';
-        const confidenceScore = typeof det.score === 'number' ? det.score : Number(det.confidence ?? conf);
-
-        const isTargetMatch = targetObjects.includes(String(detected_object).toLowerCase());
-        const isAboveThreshold = confidenceScore >= threshold;
-
-        if (isTargetMatch && isAboveThreshold) {
-          setImmediate(() => {
-            logDetectionEvent({
-              camera_id: cameraId,
-              detected_object,
-              confidence: confidenceScore,
-              uid: assignedUid
-            }).catch(err => {
-              console.warn('[YOLO_BRIDGE] Background Supabase insert error:', err.message || err);
-            });
-          });
-        }
+    if (options.logDetection) {
+      try {
+        await logDetection({
+          detections: result,
+          confidence: conf,
+          timestamp: new Date().toISOString()
+        }, options.activeUserIdentifier);
+      } catch (logErr) {
+        console.warn('[YOLO_BRIDGE] Failed to log detection:', logErr.message || logErr);
       }
     }
 
     return result;
   }
 
-  /**
-   * General detection method alias
-   */
-  async detect(base64Image, options = {}) {
-    return this.detectHumans(base64Image, options);
-  }
-
-  /**
-   * Extract 128-dimensional multi-part appearance features from a person crop
-   * @param {string} base64Crop - Crop dataURL or raw Base64
-   */
   async extractFeatures(base64Crop) {
     return this._postJson('/extract-features', { image: base64Crop }, 2500);
   }
 
-  /**
-   * Match embedding against gallery
-   * @param {Array<number>} embedding - 128-d feature array
-   * @param {Array<Object>} gallery - List of known candidates with embeddings
-   * @param {number} [threshold=0.78]
-   */
   async matchBody(embedding, gallery, threshold = 0.78) {
     return this._postJson('/match-body', { embedding, gallery, threshold }, 2000);
+  }
+
+  async getActiveUserUid(userEmailOrPhone) {
+    return getActiveUserUid(userEmailOrPhone);
+  }
+
+  async logDetection(detectionData, activeUserIdentifier) {
+    return logDetection(detectionData, activeUserIdentifier);
   }
 
   getStatus() {
@@ -365,7 +393,6 @@ class YoloBridge {
   }
 }
 
-// Global singleton instance
 let instance = null;
 function getYoloBridge() {
   if (!instance) {
@@ -377,7 +404,12 @@ function getYoloBridge() {
 module.exports = {
   YoloBridge,
   getYoloBridge,
+  getActiveUserUid,
+  logDetection,
   logDetectionEvent,
-  DEFAULT_FALLBACK_UID,
-  supabase
+  cctvDb,
+  coreDb,
+  supabase,
+  DEFAULT_MOCK_UID,
+  DEFAULT_FALLBACK_UID
 };

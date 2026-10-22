@@ -1175,6 +1175,8 @@
         var target = document.getElementById('btnOpenPdfReportModal') || document.getElementById('btnTabPdfReport');
         if (target) target.click();
       });
+    }
+
     // 4. CEOVA Desktop Keyboard Event Bridge (Solves macOS WKWebView iframe input keystroke swallow bug)
     window.addEventListener('message', function(evt) {
       if (!evt.data || evt.data.type !== 'CEOVA_KEYSTROKE') return;

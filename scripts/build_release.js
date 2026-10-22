@@ -60,6 +60,8 @@ function createArchive(version, outputFilename) {
   const includeItems = [
     'package.json',
     'server.js',
+    'db_clients.js',
+    'supabaseClient.js',
     'api',
     'bots',
     'context',

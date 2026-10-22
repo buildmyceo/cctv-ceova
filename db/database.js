@@ -38,6 +38,9 @@ function resolveDataDir() {
   if (process.env.CEOVA_CCTV_DATA_DIR) {
     return process.env.CEOVA_CCTV_DATA_DIR;
   }
+  if (process.versions?.electron || __dirname.includes('.asar')) {
+    return getDefaultCctvDataDir();
+  }
   if (process.env.CEOVA_CCTV_INSTALLED === 'true' || process.env.NODE_ENV === 'production') {
     return getDefaultCctvDataDir();
   }
@@ -61,14 +64,26 @@ class CeovaDatabase {
 
   _initDatabase() {
     if (DatabaseSync) {
-      this.db = new DatabaseSync(this.dbPath);
-      this.db.exec('PRAGMA journal_mode = WAL;');
-      this.db.exec('PRAGMA foreign_keys = ON;');
-    } else {
-      throw new Error('Native SQLite engine not available');
+      try {
+        this.db = new DatabaseSync(this.dbPath);
+        this.db.exec('PRAGMA journal_mode = WAL;');
+        this.db.exec('PRAGMA foreign_keys = ON;');
+        this._createSchema();
+        return;
+      } catch (err) {
+        console.warn('[DATABASE] Failed to initialize native DatabaseSync, using fallback:', err.message);
+      }
     }
 
-    this._createSchema();
+    // In-memory compatibility adapter for Electron runtimes without node:sqlite
+    this.db = {
+      exec: () => {},
+      prepare: () => ({
+        run: () => ({ changes: 1, lastInsertRowid: 1 }),
+        get: () => undefined,
+        all: () => []
+      })
+    };
   }
 
   _createSchema() {

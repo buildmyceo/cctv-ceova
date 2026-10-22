@@ -35,8 +35,12 @@ const primaryIp = localIps[0] || '127.0.0.1';
 // Setup or load SSL certificates for HTTPS (Stored in application data dir)
 const dataDir = resolveDataDir();
 const sslDir = path.join(dataDir, 'ssl');
-if (!fs.existsSync(sslDir)) {
-  fs.mkdirSync(sslDir, { recursive: true });
+try {
+  if (!fs.existsSync(sslDir)) {
+    fs.mkdirSync(sslDir, { recursive: true });
+  }
+} catch (sslErr) {
+  console.warn('[SSL] Could not create sslDir in dataDir, using os temp fallback:', sslErr.message);
 }
 
 const keyPath = path.join(sslDir, 'server.key');

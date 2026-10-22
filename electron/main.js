@@ -11,6 +11,7 @@ const { app, BrowserWindow, shell, session, Menu } = require('electron');
 const path = require('path');
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
 
 let mainWindow = null;
 const PORT = process.env.PORT || 3443;
@@ -34,7 +35,17 @@ if (!gotTheLock) {
  */
 function startBackendServer() {
   try {
-    console.log('[ELECTRON] Initializing embedded CCTV backend server...');
+    const userData = app.getPath('userData');
+    const cctvDataDir = path.join(userData, 'data');
+    const fs = require('fs');
+    if (!fs.existsSync(cctvDataDir)) {
+      fs.mkdirSync(cctvDataDir, { recursive: true });
+    }
+    process.env.CEOVA_CCTV_DATA_DIR = cctvDataDir;
+    process.env.CEOVA_CCTV_INSTALLED = 'true';
+    process.env.NODE_ENV = 'production';
+
+    console.log('[ELECTRON] Initializing embedded CCTV backend server with data dir:', cctvDataDir);
     // server.js starts Express, WebSocket, RTSP proxy, SQLite DB, and Supabase client
     require('../server.js');
     console.log('[ELECTRON] Embedded CCTV server started successfully.');
@@ -84,7 +95,8 @@ async function createWindow() {
     minWidth: 1024,
     minHeight: 700,
     title: 'CEOVA CCTV // Autonomous Surveillance Hub',
-    icon: path.join(__dirname, '../build/icon.png'),
+    // safe icon
+    ...(fs.existsSync(path.join(__dirname, '../build/icon.png')) ? { icon: path.join(__dirname, '../build/icon.png') } : {}),
     backgroundColor: '#0a0e17',
     show: false,
     webPreferences: {
@@ -134,6 +146,15 @@ async function createWindow() {
   const targetUrl = httpsReady ? `https://localhost:${PORT}` : `http://localhost:${HTTP_PORT}`;
 
   console.log(`[ELECTRON] Loading CCTV Web Interface from: ${targetUrl}`);
+  mainWindow.webContents.on("did-fail-load", (_e, code, desc) => {
+    if (code === -3) return;
+    console.warn(`[ELECTRON] Interface load failed (${code}: ${desc}), retrying in 1s...`);
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.loadURL(targetUrl);
+      }
+    }, 1000);
+  });
   mainWindow.loadURL(targetUrl);
 
   mainWindow.on('closed', () => {
